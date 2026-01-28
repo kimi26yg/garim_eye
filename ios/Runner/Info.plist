@@ -4,6 +4,10 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+    <key>NSCameraUsageDescription</key>
+    <string>We need access to your camera for video calls.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>We need access to your microphone for video calls.</string>
 	<key>CFBundleDisplayName</key>
 	<string>Garim Eye V2</string>
 	<key>CFBundleExecutable</key>

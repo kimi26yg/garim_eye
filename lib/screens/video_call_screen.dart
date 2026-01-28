@@ -4,7 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../providers/app_providers.dart';
+import '../providers/call_provider.dart';
 import '../theme/app_theme.dart';
 
 class VideoCallScreen extends ConsumerStatefulWidget {
@@ -30,6 +33,14 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
       vsync: this,
       duration: const Duration(milliseconds: 1000), // 더 천천히 움직임
     )..repeat(reverse: true);
+
+    _initCall();
+  }
+
+  Future<void> _initCall() async {
+    await [Permission.camera, Permission.microphone].request();
+    // Auto-join 'test_room' for MVP
+    ref.read(callProvider.notifier).startCall('test_room');
   }
 
   @override
@@ -82,13 +93,12 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
       body: Stack(
         children: [
           // 1. Background Placeholder (Gradient)
+          // 1. Remote Video View (Background)
           Container(
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [Color(0xFF1a2b45), Color(0xFF0B1221)],
-              ),
+            decoration: const BoxDecoration(color: Colors.black),
+            child: RTCVideoView(
+              ref.watch(callProvider).remoteRenderer,
+              objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
             ),
           ),
 
@@ -164,25 +174,23 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
           ),
 
           // 3. Main Call Content Placeholder
-          Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  Icons.person,
-                  size: 120,
-                  color: AppTheme.textSecondary.withValues(alpha: 0.2),
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  '강혜린 (팀장님)',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    color: AppTheme.textSecondary.withValues(alpha: 0.5),
+          // 3. Main Call Content Placeholder (Hidden when connected)
+          if (ref.watch(callProvider).status != CallStatus.connected)
+            Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const CircularProgressIndicator(color: Colors.white),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Connecting...',
+                    style: Theme.of(
+                      context,
+                    ).textTheme.titleMedium?.copyWith(color: Colors.white),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
 
           // 4. Interaction Guide (Bottom Banner) - Only for Critical
           // 4. Interaction Guide (Bottom Banner) - Warning & Critical 모두 대응
@@ -268,28 +276,26 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
                   newY,
                 );
               },
-              child: Container(
-                width: 100,
-                height: 140,
-                decoration: BoxDecoration(
-                  color: AppTheme.surface,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: AppTheme.textSecondary, width: 1),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.5),
-                      blurRadius: 8,
-                      offset: const Offset(0, 4),
-                    ),
-                  ],
-                ),
-                child: const Center(
-                  child: Text(
-                    'My View',
-                    style: TextStyle(
-                      color: AppTheme.textSecondary,
-                      fontSize: 12,
-                    ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Container(
+                  width: 100,
+                  height: 140,
+                  decoration: BoxDecoration(
+                    color: AppTheme.surface,
+                    border: Border.all(color: AppTheme.textSecondary, width: 1),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.5),
+                        blurRadius: 8,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: RTCVideoView(
+                    ref.watch(callProvider).localRenderer,
+                    mirror: true,
+                    objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
                   ),
                 ),
               ),

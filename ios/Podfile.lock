@@ -1,0 +1,35 @@
+PODS:
+  - Flutter (1.0.0)
+  - flutter_webrtc (1.2.0):
+    - Flutter
+    - WebRTC-SDK (= 137.7151.04)
+  - permission_handler_apple (9.3.0):
+    - Flutter
+  - WebRTC-SDK (137.7151.04)
+
+DEPENDENCIES:
+  - Flutter (from `Flutter`)
+  - flutter_webrtc (from `.symlinks/plugins/flutter_webrtc/ios`)
+  - permission_handler_apple (from `.symlinks/plugins/permission_handler_apple/ios`)
+
+SPEC REPOS:
+  trunk:
+    - WebRTC-SDK
+
+EXTERNAL SOURCES:
+  Flutter:
+    :path: Flutter
+  flutter_webrtc:
+    :path: ".symlinks/plugins/flutter_webrtc/ios"
+  permission_handler_apple:
+    :path: ".symlinks/plugins/permission_handler_apple/ios"
+
+SPEC CHECKSUMS:
+  Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
+  flutter_webrtc: c3e21fc0dcd9d8eb246ae4d5256fcbeb2f5ecd22
+  permission_handler_apple: 4ed2196e43d0651e8ff7ca3483a069d469701f2d
+  WebRTC-SDK: 40d4f5ba05cadff14e4db5614aec402a633f007e
+
+PODFILE CHECKSUM: 6f34d89b01f2c185311dd87a35974f0b14300766
+
+COCOAPODS: 1.16.2
