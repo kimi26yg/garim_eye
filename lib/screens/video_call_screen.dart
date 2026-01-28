@@ -94,11 +94,14 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
         children: [
           // 1. Background Placeholder (Gradient)
           // 1. Remote Video View (Background)
-          Container(
-            decoration: const BoxDecoration(color: Colors.black),
-            child: RTCVideoView(
-              ref.watch(callProvider).remoteRenderer,
-              objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+          // 1. Remote Video View (Background)
+          Positioned.fill(
+            child: Container(
+              decoration: const BoxDecoration(color: Colors.black),
+              child: RTCVideoView(
+                ref.watch(callProvider).remoteRenderer,
+                objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+              ),
             ),
           ),
 

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/legacy.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import '../services/webrtc_service.dart';
@@ -51,6 +52,7 @@ class CallNotifier extends StateNotifier<CallState> {
     };
 
     _webRTCService.onRemoteStream = (stream) {
+      debugPrint('CallNotifier: Setting remote stream to renderer');
       state.remoteRenderer.srcObject = stream;
       state = state.copyWith(status: CallStatus.connected);
     };

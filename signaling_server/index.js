@@ -25,15 +25,15 @@ io.on("connection", (socket) => {
   });
 
   socket.on("answer", (payload) => {
-    const { roomId, sdp } = payload;
+    const { roomId, sdp, type } = payload;
     console.log(`Answer from ${socket.id} to room ${roomId}`);
-    socket.to(roomId).emit("answer", { sdp, sender: socket.id });
+    socket.to(roomId).emit("answer", { sdp, type, sender: socket.id });
   });
 
   socket.on("ice-candidate", (payload) => {
-    const { roomId, candidate } = payload;
+    const { roomId, candidate, sdpMid, sdpMLineIndex } = payload;
     console.log(`ICE Candidate from ${socket.id} to room ${roomId}`);
-    socket.to(roomId).emit("ice-candidate", { candidate, sender: socket.id });
+    socket.to(roomId).emit("ice-candidate", { candidate, sdpMid, sdpMLineIndex, sender: socket.id });
   });
 
   socket.on("disconnect", () => {
