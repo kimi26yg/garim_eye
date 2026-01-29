@@ -9,6 +9,7 @@ import 'package:permission_handler/permission_handler.dart';
 import '../providers/app_providers.dart';
 import '../providers/call_provider.dart';
 import '../theme/app_theme.dart';
+import '../services/detection/deepfake_inference_service.dart';
 
 class VideoCallScreen extends ConsumerStatefulWidget {
   const VideoCallScreen({super.key});
@@ -440,6 +441,8 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
               ),
             ),
           ),
+          // Test Overlay
+          const Positioned(top: 100, right: 20, child: _DeepfakeMonitor()),
         ],
       ),
     );
@@ -550,6 +553,112 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
         Navigator.pop(context); // Close the sheet
       },
       child: Text(label),
+    );
+  }
+}
+
+class _DeepfakeMonitor extends ConsumerStatefulWidget {
+  const _DeepfakeMonitor();
+
+  @override
+  ConsumerState<_DeepfakeMonitor> createState() => _DeepfakeMonitorState();
+}
+
+class _DeepfakeMonitorState extends ConsumerState<_DeepfakeMonitor> {
+  final DeepfakeInferenceService _service = DeepfakeInferenceService();
+  bool _isActive = false;
+  double _lastScore = 0.0;
+
+  @override
+  void initState() {
+    super.initState();
+    _service.initialize();
+    _service.scoreStream.listen((score) {
+      if (mounted) {
+        setState(() => _lastScore = score);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _service.dispose();
+    super.dispose();
+  }
+
+  Future<void> _toggle() async {
+    if (_isActive) {
+      await _service.stop();
+      setState(() => _isActive = false);
+    } else {
+      final remote = ref.read(callProvider).remoteRenderer;
+      if (remote.srcObject != null &&
+          remote.srcObject!.getVideoTracks().isNotEmpty) {
+        final track = remote.srcObject!.getVideoTracks().first;
+        await _service.start(track);
+        setState(() => _isActive = true);
+      } else {
+        debugPrint("No remote track found");
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    Color statusColor = Colors.green;
+    if (_lastScore > 0.8)
+      statusColor = Colors.red;
+    else if (_lastScore > 0.5)
+      statusColor = Colors.orange;
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.black54,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: statusColor, width: 2),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text(
+            "Deepfake Probability",
+            style: TextStyle(color: Colors.white70, fontSize: 10),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            "${(_lastScore * 100).toStringAsFixed(1)}%",
+            style: TextStyle(
+              color: statusColor,
+              fontWeight: FontWeight.bold,
+              fontSize: 20,
+            ),
+          ),
+          const SizedBox(height: 8),
+          if (_isActive)
+            const SizedBox(
+              width: 12,
+              height: 12,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Colors.white,
+              ),
+            )
+          else
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.white24,
+                minimumSize: const Size(80, 30),
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+              ),
+              onPressed: _toggle,
+              child: const Text(
+                "Start Detection",
+                style: TextStyle(fontSize: 11),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }
