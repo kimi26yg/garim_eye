@@ -22,6 +22,7 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
     with TickerProviderStateMixin {
   late AnimationController _pulseController;
   late AnimationController _slowPulseController;
+  final DeepfakeInferenceService _inferenceService = DeepfakeInferenceService();
 
   @override
   void initState() {
@@ -36,6 +37,109 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
     )..repeat(reverse: true);
 
     _initCall();
+    _initInference();
+  }
+
+  void _initInference() {
+    _inferenceService.initialize();
+
+    // Auto-start if 'Garim' is active by default
+    if (ref.read(garimProtectionProvider)) {
+      // We need a remote track. We'll listen to callProvider changes or try to start when connected.
+      // For now, let's just listen to state updates.
+    }
+
+    _inferenceService.stateStream.listen((state) {
+      if (mounted) {
+        // Update Risk Level
+        final RiskLevel newLevel;
+        switch (state.status) {
+          case DetectionStatus.safe:
+            newLevel = RiskLevel.safe;
+            break;
+          case DetectionStatus.warning:
+            newLevel = RiskLevel.warning;
+            break;
+          case DetectionStatus.danger:
+            newLevel = RiskLevel.critical;
+            break;
+        }
+        // Only update if changed prevents unnecessary rebuilds, but simple set is fine
+        ref.read(riskLevelProvider.notifier).state = newLevel;
+      }
+    });
+
+    // Listen to Call Status to Auto-Start/Stop Inference
+    ref.listenManual(callProvider, (previous, next) {
+      if (next.status == CallStatus.connected &&
+          next.remoteRenderer.srcObject != null &&
+          ref.read(garimProtectionProvider)) {
+        // Connected & Protection ON -> Start
+        _startInferenceIfPossible();
+      } else if (next.status == CallStatus.ended) {
+        _inferenceService.stop();
+      }
+    });
+  }
+
+  Future<void> _startInferenceIfPossible() async {
+    final remote = ref.read(callProvider).remoteRenderer;
+    if (remote.srcObject != null &&
+        remote.srcObject!.getVideoTracks().isNotEmpty) {
+      final track = remote.srcObject!.getVideoTracks().first;
+      await _inferenceService.start(track);
+      debugPrint("[VideoCallScreen] Inference Started via Policy");
+    }
+  }
+
+  Future<void> _toggleGarimProtection(bool isCurrentlyActive) async {
+    if (isCurrentlyActive) {
+      // Turning OFF
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text("⚠️ 보호 해제 경고"),
+          content: const Text(
+            "딥페이크 탐지 기능을 끄시겠습니까?\n\n"
+            "보호를 해제하면 실시간 딥페이크 공격에 무방비 상태가 되며, "
+            "금융 사기나 피싱 피해 위험이 급격히 증가합니다.",
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text("취소 (유지)"),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: const Text("위험 감수하고 끄기"),
+            ),
+          ],
+        ),
+      );
+
+      if (confirm == true) {
+        ref.read(riskLevelProvider.notifier).state =
+            RiskLevel.safe; // Reset risk
+        ref.read(garimProtectionProvider.notifier).state = false;
+        await _inferenceService.stop();
+        debugPrint("[Garim] Protection Disabled by User");
+      }
+    } else {
+      // Turning ON
+      ref.read(garimProtectionProvider.notifier).state = true;
+      await _startInferenceIfPossible();
+
+      // Toast / SnackBar
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("🛡️ 가림 보호 모드가 활성화되었습니다."),
+          backgroundColor: AppTheme.primary,
+          duration: Duration(seconds: 2),
+        ),
+      );
+      debugPrint("[Garim] Protection Enabled by User");
+    }
   }
 
   Future<void> _initCall() async {
@@ -53,6 +157,7 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
   void dispose() {
     _pulseController.dispose();
     _slowPulseController.dispose();
+    _inferenceService.dispose();
     super.dispose();
   }
 
@@ -324,10 +429,7 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
                   onPressed: () => context.go('/'),
                 ),
                 InkWell(
-                  onTap: () {
-                    ref.read(garimProtectionProvider.notifier).state =
-                        !isGarimActive;
-                  },
+                  onTap: () => _toggleGarimProtection(isGarimActive),
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 300),
                     padding: const EdgeInsets.symmetric(
@@ -337,12 +439,12 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
                     decoration: BoxDecoration(
                       color: isGarimActive
                           ? AppTheme.riskLow.withValues(alpha: 0.2)
-                          : Colors.transparent,
+                          : Colors.grey.withValues(alpha: 0.2), // Inactive Grey
                       borderRadius: BorderRadius.circular(20),
                       border: Border.all(
                         color: isGarimActive
                             ? AppTheme.riskLow
-                            : AppTheme.textSecondary,
+                            : Colors.grey, // Inactive Grey
                       ),
                       boxShadow: isGarimActive
                           ? [
@@ -356,19 +458,17 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
                     child: Row(
                       children: [
                         Icon(
-                          Icons.shield,
+                          isGarimActive ? Icons.shield : Icons.shield_outlined,
                           size: 18,
-                          color: isGarimActive
-                              ? AppTheme.riskLow
-                              : AppTheme.textSecondary,
+                          color: isGarimActive ? AppTheme.riskLow : Colors.grey,
                         ),
                         const SizedBox(width: 8),
                         Text(
-                          'GARIM',
+                          isGarimActive ? 'GARIM ON' : 'GARIM OFF',
                           style: TextStyle(
                             color: isGarimActive
                                 ? AppTheme.riskLow
-                                : AppTheme.textSecondary,
+                                : Colors.grey,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
@@ -442,7 +542,11 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
             ),
           ),
           // Test Overlay
-          const Positioned(top: 100, right: 20, child: _DeepfakeMonitor()),
+          Positioned(
+            top: 100,
+            right: 20,
+            child: _DeepfakeMonitor(service: _inferenceService),
+          ),
         ],
       ),
     );
@@ -558,58 +662,50 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
 }
 
 class _DeepfakeMonitor extends ConsumerStatefulWidget {
-  const _DeepfakeMonitor();
+  final DeepfakeInferenceService service;
+  const _DeepfakeMonitor({required this.service});
 
   @override
   ConsumerState<_DeepfakeMonitor> createState() => _DeepfakeMonitorState();
 }
 
 class _DeepfakeMonitorState extends ConsumerState<_DeepfakeMonitor> {
-  final DeepfakeInferenceService _service = DeepfakeInferenceService();
-  bool _isActive = false;
-  double _lastScore = 0.0;
+  DeepfakeState? _lastState;
 
   @override
   void initState() {
     super.initState();
-    _service.initialize();
-    _service.scoreStream.listen((score) {
+    // Service is managed by parent, we just listen to update local UI
+    widget.service.stateStream.listen((state) {
       if (mounted) {
-        setState(() => _lastScore = score);
+        setState(() => _lastState = state);
       }
     });
   }
 
   @override
-  void dispose() {
-    _service.dispose();
-    super.dispose();
-  }
-
-  Future<void> _toggle() async {
-    if (_isActive) {
-      await _service.stop();
-      setState(() => _isActive = false);
-    } else {
-      final remote = ref.read(callProvider).remoteRenderer;
-      if (remote.srcObject != null &&
-          remote.srcObject!.getVideoTracks().isNotEmpty) {
-        final track = remote.srcObject!.getVideoTracks().first;
-        await _service.start(track);
-        setState(() => _isActive = true);
-      } else {
-        debugPrint("No remote track found");
-      }
-    }
-  }
-
-  @override
   Widget build(BuildContext context) {
     Color statusColor = Colors.green;
-    if (_lastScore > 0.8)
-      statusColor = Colors.red;
-    else if (_lastScore > 0.5)
-      statusColor = Colors.orange;
+    String statusText = "SAFE";
+    double confidence = 0.0;
+
+    if (_lastState != null) {
+      confidence = _lastState!.confidence;
+      switch (_lastState!.status) {
+        case DetectionStatus.danger:
+          statusColor = Colors.red;
+          statusText = "DANGER";
+          break;
+        case DetectionStatus.warning:
+          statusColor = Colors.orange;
+          statusText = "WARNING";
+          break;
+        case DetectionStatus.safe:
+          statusColor = Colors.green;
+          statusText = "SAFE";
+          break;
+      }
+    }
 
     return Container(
       padding: const EdgeInsets.all(12),
@@ -621,42 +717,19 @@ class _DeepfakeMonitorState extends ConsumerState<_DeepfakeMonitor> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Text(
-            "Deepfake Probability",
-            style: TextStyle(color: Colors.white70, fontSize: 10),
+          Text(
+            "DF Confidence ($statusText)",
+            style: const TextStyle(color: Colors.white70, fontSize: 10),
           ),
           const SizedBox(height: 4),
           Text(
-            "${(_lastScore * 100).toStringAsFixed(1)}%",
+            "${(confidence * 100).toStringAsFixed(1)}%",
             style: TextStyle(
               color: statusColor,
               fontWeight: FontWeight.bold,
               fontSize: 20,
             ),
           ),
-          const SizedBox(height: 8),
-          if (_isActive)
-            const SizedBox(
-              width: 12,
-              height: 12,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: Colors.white,
-              ),
-            )
-          else
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.white24,
-                minimumSize: const Size(80, 30),
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-              ),
-              onPressed: _toggle,
-              child: const Text(
-                "Start Detection",
-                style: TextStyle(fontSize: 11),
-              ),
-            ),
         ],
       ),
     );

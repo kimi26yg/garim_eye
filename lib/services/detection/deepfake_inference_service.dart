@@ -35,11 +35,30 @@ class InferenceResponse {
   });
 }
 
+enum DetectionStatus { safe, warning, danger }
+
+class DeepfakeState {
+  final double rawScore;
+  final double confidence; // Moving Average
+  final DetectionStatus status;
+
+  DeepfakeState({
+    required this.rawScore,
+    required this.confidence,
+    required this.status,
+  });
+
+  @override
+  String toString() =>
+      'State(conf: ${(confidence * 100).toStringAsFixed(1)}%, status: ${status.name})';
+}
+
 // --- Service ---
 
 class DeepfakeInferenceService {
   static const double PADDING_FACTOR = 0.2; // 0.2 padding (20% each side)
   static const int BATCH_SIZE = 1;
+  static const int MA_WINDOW_SIZE = 5; // Moving Average Window
 
   final FrameExtractor _frameExtractor = FrameExtractor();
   final FaceDetector _faceDetector = FaceDetector(
@@ -56,13 +75,16 @@ class DeepfakeInferenceService {
 
   // State
   bool _isProcessing = false;
-  final _scoreController = StreamController<double>.broadcast();
-  Stream<double> get scoreStream => _scoreController.stream;
+
+  // Reliability State
+  final List<double> _scoreBuffer = [];
+  final _stateController = StreamController<DeepfakeState>.broadcast();
+  Stream<DeepfakeState> get stateStream => _stateController.stream;
 
   // Logging
   IOSink? _logSink;
 
-  // Debug
+  // Debug (Unused for now, keeping for reference if needed)
   Interpreter? _debugInterpreter;
 
   Future<void> initialize() async {
@@ -71,21 +93,11 @@ class DeepfakeInferenceService {
 
     // 0. Prepare Model File (Main Thread) - Avoids AssetBundle issues in Isolate
     final modelBytes = await rootBundle.load(
-      'assets/models/garim_model_fp16.tflite',
+      'assets/models/garim_model_standard.tflite',
     );
     final tempDir = await getTemporaryDirectory();
     final modelFile = File('${tempDir.path}/model.tflite');
     await modelFile.writeAsBytes(modelBytes.buffer.asUint8List());
-
-    // --- DEBUG: Run on Main Thread to bypass silent Isolate ---
-    try {
-      debugPrint("[InferenceService] DEBUG: Loading model on Main Thread...");
-      _debugInterpreter = Interpreter.fromFile(modelFile);
-      debugPrint("[InferenceService] DEBUG: Model loaded on Main Thread.");
-    } catch (e) {
-      debugPrint("[InferenceService] DEBUG: Model load failed: $e");
-    }
-    // -----------------------------------------------------------
 
     if (_isolate != null) return;
 
@@ -98,8 +110,6 @@ class DeepfakeInferenceService {
       modelFile.path, // Pass file path instead of asset name
     ]);
 
-    // _sendPort = await receivePort.first as SendPort; // REMOVE: This consumes the stream!
-
     // Listen for results
     receivePort.listen((message) {
       if (message is SendPort) {
@@ -107,8 +117,7 @@ class DeepfakeInferenceService {
         debugPrint("[InferenceService] Handshake received. Pipeline ready.");
       } else if (message is InferenceResponse) {
         if (!message.isError) {
-          _scoreController.add(message.score);
-          _logInference(message.score);
+          _processScore(message.score);
         } else {
           debugPrint("[InferenceService] Error: ${message.errorMessage}");
         }
@@ -116,6 +125,41 @@ class DeepfakeInferenceService {
     });
 
     debugPrint("[InferenceService] Initialized & Cache Cleared.");
+  }
+
+  void _processScore(double rawScore) {
+    // 1. Update Buffer (First-In, First-Out)
+    _scoreBuffer.add(rawScore);
+    if (_scoreBuffer.length > MA_WINDOW_SIZE) {
+      _scoreBuffer.removeAt(0);
+    }
+
+    // 2. Calculate Moving Average
+    double maScore = 0.0;
+    if (_scoreBuffer.isNotEmpty) {
+      maScore = _scoreBuffer.reduce((a, b) => a + b) / _scoreBuffer.length;
+    }
+
+    // 3. Determine State
+    DetectionStatus status;
+    if (maScore >= 0.7) {
+      status = DetectionStatus.danger;
+    } else if (maScore >= 0.4) {
+      status = DetectionStatus.warning;
+    } else {
+      status = DetectionStatus.safe;
+    }
+
+    // 4. Emit State
+    final state = DeepfakeState(
+      rawScore: rawScore,
+      confidence: maScore,
+      status: status,
+    );
+    _stateController.add(state);
+
+    // 5. Log
+    _logInference(state);
   }
 
   /// Deletes all temporary frame files to free up space.
@@ -157,19 +201,19 @@ class DeepfakeInferenceService {
       final logFile = File('${logDir.path}/log_session_$timestamp.csv');
 
       _logSink = logFile.openWrite();
-      _logSink?.writeln('Timestamp,Raw_Score,Inference_Time_ms');
+      _logSink?.writeln('Timestamp,Raw_Score,MA_Score,Status');
       debugPrint("[InferenceService] Logging to: ${logFile.path}");
     } catch (e) {
       debugPrint("[InferenceService] Failed to init logger: $e");
     }
   }
 
-  void _logInference(double score) {
+  void _logInference(DeepfakeState state) {
     if (_logSink != null) {
       final time = DateTime.now().toIso8601String();
       _logSink?.writeln(
-        '$time,$score,',
-      ); // Inference_Time_ms is not available here yet
+        '$time,${state.rawScore.toStringAsFixed(4)},${state.confidence.toStringAsFixed(4)},${state.status.name}',
+      );
     }
   }
 
@@ -196,6 +240,9 @@ class DeepfakeInferenceService {
     await _logSink?.flush();
     await _logSink?.close();
     _logSink = null;
+
+    // Clear buffer on stop
+    _scoreBuffer.clear();
 
     debugPrint("[InferenceService] Stopped.");
   }
@@ -233,99 +280,11 @@ class DeepfakeInferenceService {
         );
 
         final rect = face.boundingBox;
-        debugPrint("[InferenceService] Face detected: $rect.");
-
-        // --- DEBUG: Main Thread Inference ---
-        if (_debugInterpreter != null) {
-          debugPrint(
-            "[InferenceService] DEBUG: Running inference on Main Thread...",
-          );
-          try {
-            final bytes = await tempFile.readAsBytes();
-            final image = img.decodeImage(bytes);
-
-            if (image != null) {
-              // Crop & Resize (Simplified)
-              // Assuming exact same logic as worker
-              // Just for quick test
-              final x = rect.left.toInt();
-              final y = rect.top.toInt();
-              final w = rect.width.toInt();
-              final h = rect.height.toInt();
-
-              final padW = (w * PADDING_FACTOR).toInt();
-              final padH = (h * PADDING_FACTOR).toInt();
-
-              final cropX = math.max(0, x - padW);
-              final cropY = math.max(0, y - padH);
-              final cropW = math.min(image.width - cropX, w + (padW * 2));
-              final cropH = math.min(image.height - cropY, h + (padH * 2));
-
-              final cropped = img.copyCrop(
-                image,
-                x: cropX,
-                y: cropY,
-                width: cropW,
-                height: cropH,
-              );
-              final resized = img.copyResize(cropped, width: 224, height: 224);
-
-              // Normalization
-              final inputBuffer = Float32List(1 * 224 * 224 * 3);
-              int index = 0;
-              for (final pixel in resized) {
-                inputBuffer[index++] = pixel.r / 255.0;
-                inputBuffer[index++] = pixel.g / 255.0;
-                inputBuffer[index++] = pixel.b / 255.0;
-              }
-
-              var inputShape = [
-                1,
-                20,
-                224,
-                224,
-                3,
-              ]; // The model expects 20 frames!
-              // But we only have 1 frame here.
-              // We must DUPLICATE this frame 20 times to fill the tensor if BATCH=1 doesn't work for model.
-              // Wait, if model expects [1, 20, ...], we MUST provide [1, 20, ...].
-              // If BATCH_SIZE=1, that was my logic variable, but MODEL is fixed structure.
-
-              // CRITICAL: If model input is [1, 20, 224, 224, 3], and we pass [1, 1, ...], it will crash.
-              // We need to fill the buffer with 20 copies of the same frame for this debug test.
-
-              final fullInputBuffer = Float32List(1 * 20 * 224 * 224 * 3);
-              for (int i = 0; i < 20; i++) {
-                fullInputBuffer.setRange(
-                  i * inputBuffer.length,
-                  (i + 1) * inputBuffer.length,
-                  inputBuffer,
-                );
-              }
-
-              final outputBuffer = Float32List(1);
-              _debugInterpreter!.run(
-                fullInputBuffer.reshape([1, 20, 224, 224, 3]),
-                outputBuffer.reshape([1, 1]),
-              );
-
-              final score = outputBuffer[0];
-              debugPrint(
-                "[InferenceService] DEBUG RESULT: $score (Scientific: ${score.toStringAsExponential()})",
-              );
-              _scoreController.add(score);
-            }
-          } catch (e) {
-            debugPrint("[InferenceService] DEBUG Error: $e");
-          }
-
-          await tempFile.delete();
-          return; // Skip Isolate
-        }
-        // ------------------------------------
+        debugPrint(
+          "[InferenceService] Face detected: $rect. Sending to Isolate.",
+        );
 
         // Send to Isolate - Isolate becomes responsible for deletion
-        debugPrint("Sending to Isolate.");
         _sendPort!.send(
           InferenceRequest(tempFile.path, [
             rect.left.toInt(),
@@ -356,7 +315,7 @@ class DeepfakeInferenceService {
   void dispose() {
     stop();
     _faceDetector.close();
-    _scoreController.close();
+    _stateController.close();
     _sendPort?.send('close');
     _isolate?.kill();
     // Final cleanup attempt
@@ -366,152 +325,159 @@ class DeepfakeInferenceService {
   // --- Isolate Worker ---
 
   static Future<void> _inferenceWorker(List<dynamic> args) async {
-    print("[Isolate] Worker Start");
-    final SendPort mainSendPort = args[0];
-    final RootIsolateToken? rootToken = args[1];
-    final String modelPath = args[2];
+    print('🚀 [SYSTEM] Isolate Worker가 메모리에 로드되었습니다.');
 
-    if (rootToken != null) {
-      BackgroundIsolateBinaryMessenger.ensureInitialized(rootToken);
-    }
-
-    final receivePort = ReceivePort();
-    mainSendPort.send(receivePort.sendPort);
-
-    // Initialize Interpreter from File
-    Interpreter? interpreter;
     try {
-      print("[Isolate] Loading model from $modelPath...");
-      interpreter = Interpreter.fromFile(File(modelPath));
-      print("[Isolate] Model loaded successfully.");
-    } catch (e) {
-      print("[Isolate] Model load failed: $e");
-      mainSendPort.send(
-        InferenceResponse(
-          score: 0.0,
-          isError: true,
-          errorMessage: "Model load failed: $e",
-        ),
-      );
-      return;
-    }
+      final SendPort mainSendPort = args[0];
+      final RootIsolateToken? rootToken = args[1];
+      final String modelPath = args[2];
 
-    // Inference State
-    final List<List<double>> frameQueue = [];
+      if (rootToken != null) {
+        BackgroundIsolateBinaryMessenger.ensureInitialized(rootToken);
+        print('✅ [CHECK] 바이너리 메신저 초기화 성공');
+      } else {
+        print('⚠️ [WARNING] RootToken이 null입니다. 바이너리 메신저 초기화 실패 가능성 있음.');
+      }
 
-    // Model specific: Get Input Shape
-    // Assuming [1, 20, 224, 224, 3]
-    var inputShape = [1, 20, 224, 224, 3];
-    try {
-      // Try getting actual shape if possible, or fallback to fixed
-      final tensor = interpreter.getInputTensor(0);
-      inputShape = tensor.shape;
-    } catch (e) {
-      print(
-        "[Isolate] Warning: Could not get input tensor shape, using default $inputShape",
-      );
-    }
+      final receivePort = ReceivePort();
+      mainSendPort.send(receivePort.sendPort);
 
-    print("[Isolate] Expected Input Shape: $inputShape");
+      // Check Model File
+      final file = File(modelPath);
+      if (await file.exists()) {
+        print('✅ [CHECK] 모델 파일 확인됨: $modelPath (${await file.length()} bytes)');
+      } else {
+        print('🔥 [CRITICAL] 모델 파일이 존재하지 않음: $modelPath');
+        throw Exception('Model file missing');
+      }
 
-    await for (final message in receivePort) {
-      if (message is InferenceRequest) {
-        try {
-          final file = File(message.imagePath);
-          if (!await file.exists()) {
-            print("[Isolate] File missing: ${message.imagePath}");
-            continue;
-          }
+      // Initialize Interpreter
+      Interpreter? interpreter;
+      try {
+        print('⏳ [LOADING] 모델 로딩 중...');
+        interpreter = Interpreter.fromFile(file);
+        print('✅ [CHECK] 모델 로드 완료');
+      } catch (e) {
+        throw Exception('Interpreter init failed: $e');
+      }
 
-          // Decode
-          final bytes = await file.readAsBytes();
-          final image = img.decodeImage(bytes);
+      // Inference State
+      final List<List<double>> frameQueue = [];
 
-          // Delete file after read
-          await file.delete();
+      // Model specific: Get Input Shape
+      // Assuming [1, 20, 224, 224, 3]
+      var inputShape = [1, 20, 224, 224, 3];
+      try {
+        final tensor = interpreter.getInputTensor(0);
+        inputShape = tensor.shape;
+        print('📊 [DATA] 모델 입력 텐서 정보: Shape=$inputShape, Type=${tensor.type}');
+      } catch (e) {
+        print('⚠️ [WARNING] 텐서 정보 가져오기 실패: $e');
+      }
 
-          if (image == null) continue;
+      print("[Isolate] Expected Input Shape: $inputShape");
 
-          // Crop with Padding
-          final faceRect = message.faceRect;
-          final x = faceRect[0];
-          final y = faceRect[1];
-          final w = faceRect[2];
-          final h = faceRect[3];
-
-          final padW = (w * PADDING_FACTOR).toInt();
-          final padH = (h * PADDING_FACTOR).toInt();
-
-          final cropX = math.max(0, x - padW);
-          final cropY = math.max(0, y - padH);
-          final cropW = math.min(image.width - cropX, w + (padW * 2));
-          final cropH = math.min(image.height - cropY, h + (padH * 2));
-
-          final cropped = img.copyCrop(
-            image,
-            x: cropX,
-            y: cropY,
-            width: cropW,
-            height: cropH,
-          );
-
-          // Resize to 224x224
-          final resized = img.copyResize(cropped, width: 224, height: 224);
-
-          // Normalize & Convert to List<double>
-          final frameData = _imageToFloat32(resized);
-
-          // Add to Queue
-          debugPrint(
-            "[Isolate] Buffering frame: ${frameQueue.length + 1}/$BATCH_SIZE",
-          );
-          if (frameQueue.length >= BATCH_SIZE) {
-            frameQueue.removeAt(0);
-          }
-          frameQueue.add(frameData);
-
-          // Run Inference if Queue Full
-          if (frameQueue.length == BATCH_SIZE) {
-            // Flatten
-            // 20 * 224 * 224 * 3
-            // Pre-allocate buffer reuse could be optimization later
-            final inputBuffer = Float32List(1 * 20 * 224 * 224 * 3);
-            int offset = 0;
-            for (final frame in frameQueue) {
-              for (int i = 0; i < frame.length; i++) {
-                inputBuffer[offset++] = frame[i];
-              }
+      await for (final message in receivePort) {
+        if (message is InferenceRequest) {
+          try {
+            final imgFile = File(message.imagePath);
+            if (!await imgFile.exists()) {
+              print("[Isolate] File missing: ${message.imagePath}");
+              continue;
             }
 
-            // Output Buffer
-            // Determine output shape
-            var outputShape = [1, 1];
-            try {
-              outputShape = interpreter.getOutputTensor(0).shape;
-            } catch (_) {}
+            // Decode
+            final bytes = await imgFile.readAsBytes();
+            final image = img.decodeImage(bytes);
 
-            final outputSize = outputShape.reduce((a, b) => a * b);
-            final outputBuffer = Float32List(outputSize);
+            // Delete file after read
+            await imgFile.delete();
 
-            // Run Inference
-            interpreter.run(
-              inputBuffer.reshape(inputShape),
-              outputBuffer.reshape(outputShape),
+            if (image == null) continue;
+
+            // Crop with Padding
+            final faceRect = message.faceRect;
+            final x = faceRect[0];
+            final y = faceRect[1];
+            final w = faceRect[2];
+            final h = faceRect[3];
+
+            final padW = (w * PADDING_FACTOR).toInt();
+            final padH = (h * PADDING_FACTOR).toInt();
+
+            final cropX = math.max(0, x - padW);
+            final cropY = math.max(0, y - padH);
+            final cropW = math.min(image.width - cropX, w + (padW * 2));
+            final cropH = math.min(image.height - cropY, h + (padH * 2));
+
+            final cropped = img.copyCrop(
+              image,
+              x: cropX,
+              y: cropY,
+              width: cropW,
+              height: cropH,
             );
 
-            final score = outputBuffer[0];
+            // Resize to 224x224
+            final resized = img.copyResize(cropped, width: 224, height: 224);
+
+            // Normalize & Convert to List<double>
+            final frameData = _imageToFloat32(resized);
+
+            // Add to Queue
             print(
-              "[Isolate] Raw Output Score: $score (Scientific: ${score.toStringAsExponential()})",
+              "[Isolate] Buffering frame: ${frameQueue.length + 1}/$BATCH_SIZE",
             );
-            mainSendPort.send(InferenceResponse(score: score));
+            if (frameQueue.length >= BATCH_SIZE) {
+              frameQueue.removeAt(0);
+            }
+            frameQueue.add(frameData);
+
+            // Run Inference if Queue Full
+            if (frameQueue.length == BATCH_SIZE) {
+              // Flatten
+              // 20 * 224 * 224 * 3
+              // Pre-allocate buffer reuse could be optimization later
+              final inputBuffer = Float32List(1 * 20 * 224 * 224 * 3);
+              int offset = 0;
+              for (final frame in frameQueue) {
+                for (int i = 0; i < frame.length; i++) {
+                  inputBuffer[offset++] = frame[i];
+                }
+              }
+
+              // Output Buffer
+              // Determine output shape
+              var outputShape = [1, 1];
+              try {
+                outputShape = interpreter.getOutputTensor(0).shape;
+              } catch (_) {}
+
+              final outputSize = outputShape.reduce((a, b) => a * b);
+              final outputBuffer = Float32List(outputSize);
+
+              // Run Inference
+              interpreter.run(
+                inputBuffer.reshape([1, 20, 224, 224, 3]), // Ensure fixed
+                outputBuffer.reshape(outputShape),
+              );
+
+              final score = outputBuffer[0];
+              print('🎯 [RAW SCORE] 모델 출력 원본: $score');
+              mainSendPort.send(InferenceResponse(score: score));
+            }
+          } catch (e, s) {
+            print('🔥 [CRITICAL] Isolate 내부 처리 오류: $e');
+            print('📚 스택트레이스: $s');
           }
-        } catch (e) {
-          print("[Isolate] Processing Error: $e");
+        } else if (message == 'close') {
+          interpreter?.close();
+          Isolate.exit();
         }
-      } else if (message == 'close') {
-        interpreter?.close();
-        Isolate.exit();
       }
+    } catch (e, s) {
+      print('🔥 [CRITICAL] Isolate 초기화/실행 중 치명적 오류: $e');
+      print('📚 스택트레이스: $s');
     }
   }
 

@@ -65,7 +65,6 @@ PODS:
     - TensorFlowLiteC/Core
   - TensorFlowLiteC/Metal (2.12.0):
     - TensorFlowLiteC/Core
-  - TensorFlowLiteSelectTfOps (2.14.0)
   - TensorFlowLiteSwift (2.12.0):
     - TensorFlowLiteSwift/Core (= 2.12.0)
   - TensorFlowLiteSwift/Core (2.12.0):
@@ -89,7 +88,7 @@ DEPENDENCIES:
   - google_mlkit_commons (from `.symlinks/plugins/google_mlkit_commons/ios`)
   - google_mlkit_face_detection (from `.symlinks/plugins/google_mlkit_face_detection/ios`)
   - permission_handler_apple (from `.symlinks/plugins/permission_handler_apple/ios`)
-  - TensorFlowLiteSelectTfOps (~> 2.14.0)
+  - TensorFlowLiteC
   - tflite_flutter (from `.symlinks/plugins/tflite_flutter/ios`)
 
 SPEC REPOS:
@@ -106,7 +105,6 @@ SPEC REPOS:
     - nanopb
     - PromisesObjC
     - TensorFlowLiteC
-    - TensorFlowLiteSelectTfOps
     - TensorFlowLiteSwift
     - WebRTC-SDK
 
@@ -142,11 +140,10 @@ SPEC CHECKSUMS:
   permission_handler_apple: 4ed2196e43d0651e8ff7ca3483a069d469701f2d
   PromisesObjC: f5707f49cb48b9636751c5b2e7d227e43fba9f47
   TensorFlowLiteC: 20785a69299185a379ba9852b6625f00afd7984a
-  TensorFlowLiteSelectTfOps: 8fcadc9e027d87906ecc44509320c572c1fb0ba5
   TensorFlowLiteSwift: 3a4928286e9e35bdd3e17970f48e53c80d25e793
   tflite_flutter: 64b192e11352fe36943ab6656e1d49207f1a5595
   WebRTC-SDK: 40d4f5ba05cadff14e4db5614aec402a633f007e
 
-PODFILE CHECKSUM: 63b90f432b14fef0a3715ffb99636c00f1dc3388
+PODFILE CHECKSUM: cf6ca40c6e035672a97a879a2aa411a0cb72de97
 
 COCOAPODS: 1.16.2
