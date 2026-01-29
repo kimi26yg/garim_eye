@@ -39,8 +39,13 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
 
   Future<void> _initCall() async {
     await [Permission.camera, Permission.microphone].request();
-    // Auto-join 'test_room' for MVP
-    ref.read(callProvider.notifier).startCall('test_room');
+
+    final status = ref.read(callProvider).status;
+    // Only start a new call if we are idle (i.e., pure demo flow).
+    // If we are connecting/calling (from Accept), don't reset.
+    if (status == CallStatus.idle) {
+      ref.read(callProvider.notifier).startCall('test_room');
+    }
   }
 
   @override
@@ -392,7 +397,10 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
                   Icons.call_end,
                   Colors.white,
                   AppTheme.riskHigh,
-                  () => context.go('/ended'),
+                  () {
+                    ref.read(callProvider.notifier).hangup();
+                    context.go('/ended');
+                  },
                 ),
                 _buildCallControl(
                   Icons.videocam_off,

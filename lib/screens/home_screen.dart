@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import '../providers/app_providers.dart';
 import '../theme/app_theme.dart';
 import '../widgets/security_card.dart';
+import 'dial_screen.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -15,26 +16,29 @@ class HomeScreen extends ConsumerStatefulWidget {
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   int _currentIndex = 0;
 
+  final List<Widget> _screens = const [
+    _ContactsTab(),
+    DialScreen(),
+    _RecentsTab(),
+  ];
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        // 홈화면
         title: const Text('가림-아이'),
         actions: [
           IconButton(
-            //알림버튼
             icon: const Icon(Icons.notifications_outlined),
             onPressed: () {},
           ),
           IconButton(
-            //설정버튼
             icon: const Icon(Icons.settings_outlined),
             onPressed: () {},
           ),
         ],
       ),
-      body: _currentIndex == 0 ? _buildContactsTab() : _buildRecentsTab(),
+      body: _screens[_currentIndex],
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
         onTap: (index) {
@@ -44,27 +48,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         },
         items: const [
           BottomNavigationBarItem(
-            //연락처 버튼
             icon: Icon(Icons.contacts),
             label: 'Contacts',
           ),
-          BottomNavigationBarItem(
-            //최근화면 버튼
-            icon: Icon(Icons.history),
-            label: 'Recents',
-          ),
+          BottomNavigationBarItem(icon: Icon(Icons.dialpad), label: 'Dial'),
+          BottomNavigationBarItem(icon: Icon(Icons.history), label: 'Recents'),
         ],
       ),
     );
   }
+}
 
-  Widget _buildContactsTab() {
+class _ContactsTab extends ConsumerWidget {
+  const _ContactsTab();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
     return Column(
-      //연락처 화면
       children: [
         const SecurityCard(),
         Padding(
-          //연락처 탭
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Row(
             children: [
@@ -75,7 +78,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ),
         ),
         Expanded(
-          //연락처 리스트
           child: ListView(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             children: [
@@ -99,7 +101,58 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
-  Widget _buildRecentsTab() {
+  Widget _buildContactTile(
+    BuildContext context, {
+    required String name,
+    required String role,
+    required Color avatarColor,
+  }) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppTheme.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.surface.withValues(alpha: 0.5)),
+      ),
+      child: ListTile(
+        contentPadding: const EdgeInsets.all(12),
+        leading: CircleAvatar(
+          backgroundColor: avatarColor.withValues(alpha: 0.2),
+          child: Text(
+            name[0],
+            style: TextStyle(color: avatarColor, fontWeight: FontWeight.bold),
+          ),
+        ),
+        title: Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
+        subtitle: Text(
+          role,
+          style: const TextStyle(color: AppTheme.textSecondary),
+        ),
+        trailing: ElevatedButton.icon(
+          onPressed: () {
+            context.go('/calling');
+          },
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppTheme.primary.withValues(alpha: 0.1),
+            foregroundColor: AppTheme.primary,
+            elevation: 0,
+            side: const BorderSide(color: AppTheme.primary),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+            ),
+          ),
+          icon: const Icon(Icons.call, size: 18),
+          label: const Text('안심 통화'),
+        ),
+      ),
+    );
+  }
+}
+
+class _RecentsTab extends ConsumerWidget {
+  const _RecentsTab();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
     final history = ref.watch(callHistoryProvider);
 
     if (history.isEmpty) {
@@ -167,51 +220,5 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     } else {
       return '${difference.inDays} days ago';
     }
-  }
-
-  Widget _buildContactTile(
-    BuildContext context, {
-    required String name,
-    required String role,
-    required Color avatarColor,
-  }) {
-    return Container(
-      decoration: BoxDecoration(
-        color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppTheme.surface.withValues(alpha: 0.5)),
-      ),
-      child: ListTile(
-        contentPadding: const EdgeInsets.all(12),
-        leading: CircleAvatar(
-          backgroundColor: avatarColor.withValues(alpha: 0.2),
-          child: Text(
-            name[0],
-            style: TextStyle(color: avatarColor, fontWeight: FontWeight.bold),
-          ),
-        ),
-        title: Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
-        subtitle: Text(
-          role,
-          style: const TextStyle(color: AppTheme.textSecondary),
-        ),
-        trailing: ElevatedButton.icon(
-          onPressed: () {
-            context.go('/calling');
-          },
-          style: ElevatedButton.styleFrom(
-            backgroundColor: AppTheme.primary.withValues(alpha: 0.1),
-            foregroundColor: AppTheme.primary,
-            elevation: 0,
-            side: const BorderSide(color: AppTheme.primary),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
-            ),
-          ),
-          icon: const Icon(Icons.call, size: 18),
-          label: const Text('안심 통화'),
-        ),
-      ),
-    );
   }
 }
