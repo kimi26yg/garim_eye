@@ -15,7 +15,7 @@ class WebRTCService {
   // Replace with your development machine's local IP
   // Android Emulator: 10.0.2.2
   // Real Device: 192.168.x.x
-  static const String _signalingServerUrl = 'http://192.168.45.206:3000';
+  static const String _signalingServerUrl = 'http://192.168.45.207:3000';
 
   final Map<String, dynamic> _configuration = {
     'iceServers': [
