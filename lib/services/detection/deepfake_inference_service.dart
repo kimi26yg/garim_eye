@@ -57,7 +57,7 @@ class DeepfakeState {
 
 class DeepfakeInferenceService {
   static const double PADDING_FACTOR = 0.2; // 0.2 padding (20% each side)
-  static const int BATCH_SIZE = 1;
+  static const int BATCH_SIZE = 20;
   static const int MA_WINDOW_SIZE = 5; // Moving Average Window
 
   final FrameExtractor _frameExtractor = FrameExtractor();
@@ -93,7 +93,7 @@ class DeepfakeInferenceService {
 
     // 0. Prepare Model File (Main Thread) - Avoids AssetBundle issues in Isolate
     final modelBytes = await rootBundle.load(
-      'assets/models/garim_model_standard.tflite',
+      'assets/models/garim_model_v214_final_fp16.tflite',
     );
     final tempDir = await getTemporaryDirectory();
     final modelFile = File('${tempDir.path}/model.tflite');
@@ -424,30 +424,39 @@ class DeepfakeInferenceService {
             // Normalize & Convert to List<double>
             final frameData = _imageToFloat32(resized);
 
-            // Add to Queue
-            print(
-              "[Isolate] Buffering frame: ${frameQueue.length + 1}/$BATCH_SIZE",
-            );
+            // Add to Queue (Sliding Window)
             if (frameQueue.length >= BATCH_SIZE) {
               frameQueue.removeAt(0);
             }
             frameQueue.add(frameData);
 
-            // Run Inference if Queue Full
-            if (frameQueue.length == BATCH_SIZE) {
+            print("[Isolate] Buffer size: ${frameQueue.length}/$BATCH_SIZE");
+
+            // Run Inference (Allow partial buffer with padding)
+            if (frameQueue.isNotEmpty) {
               // Flatten
-              // 20 * 224 * 224 * 3
-              // Pre-allocate buffer reuse could be optimization later
               final inputBuffer = Float32List(1 * 20 * 224 * 224 * 3);
               int offset = 0;
+
+              // 1. Fill with actual frames
               for (final frame in frameQueue) {
                 for (int i = 0; i < frame.length; i++) {
                   inputBuffer[offset++] = frame[i];
                 }
               }
 
+              // 2. Pad with the LAST frame if not full (Replicate Strategy)
+              if (frameQueue.length < BATCH_SIZE) {
+                final lastFrame = frameQueue.last;
+                final missingFrames = BATCH_SIZE - frameQueue.length;
+                for (int k = 0; k < missingFrames; k++) {
+                  for (int i = 0; i < lastFrame.length; i++) {
+                    inputBuffer[offset++] = lastFrame[i];
+                  }
+                }
+              }
+
               // Output Buffer
-              // Determine output shape
               var outputShape = [1, 1];
               try {
                 outputShape = interpreter.getOutputTensor(0).shape;
@@ -457,6 +466,18 @@ class DeepfakeInferenceService {
               final outputBuffer = Float32List(outputSize);
 
               // Run Inference
+              double minVal = inputBuffer[0];
+              double maxVal = inputBuffer[0];
+              double sumVal = 0.0;
+              for (var v in inputBuffer) {
+                if (v < minVal) minVal = v;
+                if (v > maxVal) maxVal = v;
+                sumVal += v;
+              }
+              print(
+                "📊 [Isolate] Input Mean: ${(sumVal / inputBuffer.length).toStringAsFixed(3)}, Min: ${minVal.toStringAsFixed(3)}, Max: ${maxVal.toStringAsFixed(3)}",
+              );
+
               interpreter.run(
                 inputBuffer.reshape([1, 20, 224, 224, 3]), // Ensure fixed
                 outputBuffer.reshape(outputShape),
@@ -489,17 +510,17 @@ class DeepfakeInferenceService {
     // Debug: Check First Pixel
     if (image.length > 0) {
       final p = image.first;
-      print("[Isolate] Sample Pixel Input (R,G,B): ${p.r}, ${p.g}, ${p.b}");
-      print(
-        "[Isolate] Sample Pixel Normalized (0~1): ${p.r / 255.0}, ${p.g / 255.0}, ${p.b / 255.0}",
-      );
+      // print("[Isolate] Sample Pixel Input (R,G,B): ${p.r}, ${p.g}, ${p.b}");
+      // print(
+      //   "[Isolate] Sample Pixel Normalized (-1~1): ${(p.r / 127.5) - 1.0}, ...",
+      // );
     }
 
     // Iterate pixels - 'image' package standardizes memory layout
     for (final pixel in image) {
-      buffer[index++] = pixel.r / 255.0;
-      buffer[index++] = pixel.g / 255.0;
-      buffer[index++] = pixel.b / 255.0;
+      buffer[index++] = (pixel.r / 127.5) - 1.0;
+      buffer[index++] = (pixel.g / 127.5) - 1.0;
+      buffer[index++] = (pixel.b / 127.5) - 1.0;
     }
     return buffer;
   }
