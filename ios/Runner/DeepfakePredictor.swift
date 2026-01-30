@@ -44,6 +44,135 @@ class DeepfakePredictor {
         self.faceDetectionRequest = VNDetectFaceRectanglesRequest()
         // No labels needed, just bounding box
     }
+    
+    // MARK: - Native-First Pipeline: CVPixelBuffer Processing
+    
+    /// Process CVPixelBuffer directly from WebRTC (Native-First Pipeline)
+    /// This bypasses Method Channel overhead for better performance
+    func processPixelBuffer(_ pixelBuffer: CVPixelBuffer) -> [String: Any]? {
+        // 1. Convert CVPixelBuffer → CGImage
+        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+        let context = CIContext(options: nil)
+        
+        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
+            print("🔴 [Predictor] Failed to convert CVPixelBuffer to CGImage")
+            return ["status": "error", "msg": "CVPixelBuffer conversion failed"]
+        }
+        
+        // 2. Face Detection
+        let detectStart = CFAbsoluteTimeGetCurrent()
+        
+        guard let request = self.faceDetectionRequest else {
+            return ["status": "error", "msg": "Face detection not initialized"]
+        }
+        
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        
+        do {
+            try handler.perform([request])
+        } catch {
+            print("🔴 [Predictor] Face detection error: \(error)")
+            return ["status": "error", "msg": "Face detection failed"]
+        }
+        
+        guard let observations = request.results as? [VNFaceObservation],
+              let face = observations.first else {
+            return ["status": "skipped", "reason": "No face detected"]
+        }
+        
+        let detectDuration = (CFAbsoluteTimeGetCurrent() - detectStart) * 1000
+        print("✅ [Predictor] Face detected: \(face.boundingBox)")
+        
+        // 3. Crop & Resize
+        let cropStart = CFAbsoluteTimeGetCurrent()
+        
+        let boundingBox = face.boundingBox
+        
+        // Convert Vision coords to Image coords
+        let w = boundingBox.width * CGFloat(cgImage.width)
+        let h = boundingBox.height * CGFloat(cgImage.height)
+        let x = boundingBox.origin.x * CGFloat(cgImage.width)
+        let y = (1 - boundingBox.origin.y - boundingBox.height) * CGFloat(cgImage.height)
+        
+        // Add padding
+        let padding: CGFloat = 0.2
+        let padW = w * padding
+        let padH = h * padding
+        
+        let cropRect = CGRect(
+            x: x - padW,
+            y: y - padH,
+            width: w + (padW * 2),
+            height: h + (padH * 2)
+        )
+        
+        // Safe crop
+        let imageRect = CGRect(x: 0, y: 0, width: CGFloat(cgImage.width), height: CGFloat(cgImage.height))
+        let strictCropRect = cropRect.intersection(imageRect)
+        
+        guard let croppedCG = cgImage.cropping(to: strictCropRect) else {
+            print("🔴 [Predictor] Crop failed")
+            return ["status": "skipped", "reason": "Crop failed"]
+        }
+        
+        // Resize to 224x224
+        guard let resizedCG = resizeImage(cgImage: croppedCG, 
+                                         targetSize: CGSize(width: targetWidth, height: targetHeight)) else {
+            print("🔴 [Predictor] Resize failed")
+            return ["status": "skipped", "reason": "Resize failed"]
+        }
+        
+        // Get normalized pixels
+        guard let pixelsFloat = getNormalizedPixels(cgImage: resizedCG) else {
+            print("🔴 [Predictor] Pixel normalization failed")
+            return ["status": "skipped", "reason": "Normalization failed"]
+        }
+        
+        let cropDuration = (CFAbsoluteTimeGetCurrent() - cropStart) * 1000
+        
+        // 4. Buffering (Thread-safe)
+        var currentCount = 0
+        bufferQueue.sync {
+            frameBuffer.append(pixelsFloat)
+            currentCount = frameBuffer.count
+            print("📊 [Predictor] Buffer: \(currentCount)/20 frames")
+        }
+        
+        if currentCount < 20 {
+            return [
+                "status": "collecting",
+                "count": currentCount,
+                "detection_ms": detectDuration,
+                "cropping_ms": cropDuration
+            ]
+        }
+        
+        // 5. Inference
+        let inferStart = CFAbsoluteTimeGetCurrent()
+        
+        var bufferSnapshot: [[Float]] = []
+        bufferQueue.sync {
+            bufferSnapshot = frameBuffer
+            frameBuffer.removeAll()
+        }
+        
+        guard let predictionResult = runInference(frameData: bufferSnapshot) else {
+            print("🔴 [Predictor] Inference failed")
+            return ["status": "error", "msg": "Inference failed"]
+        }
+        
+        let inferDuration = (CFAbsoluteTimeGetCurrent() - inferStart) * 1000
+        
+        print("🎯 [Predictor] Inference complete: score=\(predictionResult)")
+        
+        return [
+            "status": "inference",
+            "score": predictionResult,
+            "detection_ms": detectDuration,
+            "cropping_ms": cropDuration,
+            "inference_ms": inferDuration
+        ]
+    }
 
     /// Process a single raw frame from Flutter
     /// Returns: Dictionary with status and metrics

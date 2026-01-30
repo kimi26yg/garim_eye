@@ -42,12 +42,22 @@ class DeepfakeState {
 // --- Service ---
 
 class DeepfakeInferenceService {
+  // Original Method Channel (Dart → Swift → Dart)
   static const MethodChannel _channel = MethodChannel(
     'com.garim.eye/inference',
   );
 
+  // Native-First Pipeline channels
+  static const EventChannel _nativeEventChannel = EventChannel(
+    'com.garim.eye/native_inference',
+  );
+  static const MethodChannel _nativeControlChannel = MethodChannel(
+    'com.garim.eye/native_control',
+  );
+
   final FrameExtractor _frameExtractor = FrameExtractor();
   StreamSubscription? _frameSub;
+  StreamSubscription? _nativeResultSub; // For native event channel
 
   // Intelligent Engine State
   final _stateController = StreamController<DeepfakeState>.broadcast();
@@ -80,16 +90,42 @@ class DeepfakeInferenceService {
     _frameCounter = 0; // Reset counter
 
     await _initLogger();
+
+    // Subscribe to native event channel for results
+    _nativeResultSub = _nativeEventChannel.receiveBroadcastStream().listen(
+      (result) {
+        if (result is Map) {
+          _handleNativeResult(Map<String, dynamic>.from(result));
+        }
+      },
+      onError: (error) {
+        debugPrint("❌ [InferenceService] Native channel error: $error");
+      },
+    );
+
     await _frameExtractor.startExtraction(track);
+
+    // Phase 4.5: Attach Native Sink (Critical for performance)
+    try {
+      debugPrint(
+        "🔗 [InferenceService] Attaching native sink to track: ${track.id}",
+      );
+      await _nativeControlChannel.invokeMethod('attach', {'trackId': track.id});
+    } catch (e) {
+      debugPrint("❌ [InferenceService] Failed to attach native sink: $e");
+    }
 
     // Process all frames for maximum accuracy
     // Expected: 20 frames in ~3 seconds at 16.8 FPS
     _frameSub = _frameExtractor.frameStream.listen((bytes) {
       _frameCounter++;
+      // Note: We keep this for now as a fallback/dual-mode test
       unawaited(_handleFrame(bytes));
     });
 
-    debugPrint("[InferenceService] Pipeline Started (all frames processed).");
+    debugPrint(
+      "[InferenceService] Pipeline Started (Native-First + Method Channel Fallback).",
+    );
   }
 
   Future<void> _handleFrame(Uint8List bytes) async {
@@ -261,6 +297,9 @@ class DeepfakeInferenceService {
   Future<void> stop() async {
     await _frameSub?.cancel();
     _frameSub = null;
+
+    await _nativeResultSub?.cancel();
+    _nativeResultSub = null;
     _frameExtractor.stopExtraction();
 
     // Close log file safely
