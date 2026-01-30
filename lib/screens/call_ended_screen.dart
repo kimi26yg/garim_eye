@@ -13,8 +13,8 @@ class _CallEndedScreenState extends State<CallEndedScreen> {
   @override
   void initState() {
     super.initState();
-    // Auto-navigate back to home after 3 seconds
-    Future.delayed(const Duration(seconds: 3), () {
+    // Auto-navigate back to home after 2 seconds
+    Future.delayed(const Duration(seconds: 2), () {
       if (mounted) {
         context.go('/');
       }

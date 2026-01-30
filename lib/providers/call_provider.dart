@@ -143,10 +143,28 @@ class CallNotifier extends StateNotifier<CallState> {
       callerId: targetPhone, // User I am calling
     );
 
-    // Init Media
+    // 1. Start Local Stream FIRST
+    debugPrint('CallNotifier: Starting local stream...');
     await _webRTCService.startLocalStream();
 
-    // Send Request
+    // 2. Initialize PeerConnection with room ID
+    debugPrint('CallNotifier: Initializing PeerConnection for room: $room');
+    await _webRTCService.initializePeerConnection(room);
+
+    // 3. Create and send Offer
+    debugPrint('CallNotifier: Creating Offer...');
+    RTCSessionDescription offer = await _webRTCService.createOffer();
+    debugPrint('CallNotifier: Offer created, sending to $targetPhone');
+
+    _socketService.sendOffer({
+      'from': _socketService.myPhoneNumber,
+      'to': targetPhone,
+      'sdp': offer.sdp,
+      'type': offer.type,
+    });
+
+    // 4. Send Call Request (for notification)
+    debugPrint('CallNotifier: Sending call request notification');
     _socketService.sendCallRequest(to: targetPhone, room: room);
   }
 
@@ -203,14 +221,23 @@ class CallNotifier extends StateNotifier<CallState> {
   // Refracted to allow re-init
   void _initWebRTCCallbacks() {
     _webRTCService.onLocalStream = (stream) {
+      debugPrint('📹 [CallNotifier] Local stream received: ${stream.id}');
       state.localRenderer.srcObject = stream;
       state = state.copyWith();
     };
 
     _webRTCService.onRemoteStream = (stream) {
-      debugPrint('CallNotifier: Setting remote stream');
+      debugPrint('📹 [CallNotifier] Remote stream received: ${stream.id}');
+      debugPrint(
+        '📹 [CallNotifier] Remote video tracks: ${stream.getVideoTracks().length}',
+      );
       state.remoteRenderer.srcObject = stream;
+      debugPrint('📹 [CallNotifier] Setting status to CONNECTED');
       state = state.copyWith(status: CallStatus.connected);
+      debugPrint('✅ [CallNotifier] Status now: ${state.status}');
+      debugPrint(
+        '✅ [CallNotifier] Remote srcObject: ${state.remoteRenderer.srcObject != null}',
+      );
     };
 
     _webRTCService.onIceCandidate = (candidate, _) {

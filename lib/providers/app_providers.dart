@@ -44,10 +44,16 @@ final garimProtectionProvider = NotifierProvider<GarimProtectionNotifier, bool>(
 
 class GarimProtectionNotifier extends Notifier<bool> {
   @override
-  bool build() => true;
+  bool build() {
+    debugPrint('🛡️ [GarimProtection] Initialized with: true');
+    return true;
+  }
 
   @override
-  set state(bool value) => super.state = value;
+  set state(bool value) {
+    debugPrint('🛡️ [GarimProtection] State changing: $state → $value');
+    super.state = value;
+  }
 }
 
 class CallRecord {

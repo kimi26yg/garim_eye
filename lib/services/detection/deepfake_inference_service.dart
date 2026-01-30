@@ -83,11 +83,22 @@ class DeepfakeInferenceService {
   }
 
   Future<void> start(MediaStreamTrack track) async {
-    if (_frameSub != null) return;
+    // Phase 4.5: Attach Native Sink (PRIORITY 1) - Must happen before anything else
+    debugPrint(
+      "🚀 [InferenceService] STARTING PIPELINE for track: ${track.id}",
+    );
+    try {
+      debugPrint("🔗 [InferenceService] Attempting to attach native sink...");
+      final result = await _nativeControlChannel.invokeMethod('attach', {
+        'trackId': track.id,
+      });
+      debugPrint("✅ [InferenceService] Native sink attached result: $result");
+    } catch (e) {
+      debugPrint("❌ [InferenceService] Failed to attach native sink: $e");
+    }
 
     _isFirstRun = true;
     _previousRawScore = 0.0;
-    _frameCounter = 0; // Reset counter
 
     await _initLogger();
 
@@ -103,17 +114,8 @@ class DeepfakeInferenceService {
       },
     );
 
+    // Pure Native Mode: Disable Dart frame extraction to verify Native connection
     await _frameExtractor.startExtraction(track);
-
-    // Phase 4.5: Attach Native Sink (Critical for performance)
-    try {
-      debugPrint(
-        "🔗 [InferenceService] Attaching native sink to track: ${track.id}",
-      );
-      await _nativeControlChannel.invokeMethod('attach', {'trackId': track.id});
-    } catch (e) {
-      debugPrint("❌ [InferenceService] Failed to attach native sink: $e");
-    }
 
     // Process all frames for maximum accuracy
     // Expected: 20 frames in ~3 seconds at 16.8 FPS

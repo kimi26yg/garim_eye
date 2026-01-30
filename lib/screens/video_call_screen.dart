@@ -77,20 +77,76 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
     debugPrint("🔗 [VideoCallScreen] Registering call status listener");
     ref.listenManual(callProvider, (previous, next) {
       debugPrint(
-        "📞 [VideoCallScreen] Call status changed: ${previous?.status} -> ${next.status}",
+        "📞 [VideoCallScreen] ═══════════════════════════════════════",
+      );
+      debugPrint(
+        "📞 [VideoCallScreen] Call status changed: ${previous?.status} → ${next.status}",
+      );
+      debugPrint(
+        "📞 [VideoCallScreen]   - Remote srcObject: ${next.remoteRenderer.srcObject}",
+      );
+      debugPrint(
+        "📞 [VideoCallScreen]   - Remote tracks: ${next.remoteRenderer.srcObject?.getVideoTracks().length}",
+      );
+      debugPrint(
+        "📞 [VideoCallScreen]   - Protection ON: ${ref.read(garimProtectionProvider)}",
       );
 
-      if (next.status == CallStatus.connected &&
-          next.remoteRenderer.srcObject != null &&
-          ref.read(garimProtectionProvider)) {
+      // Check each condition individually
+      final isConnected = next.status == CallStatus.connected;
+      final hasRemoteStream = next.remoteRenderer.srcObject != null;
+      final isProtectionActive = ref.read(garimProtectionProvider);
+
+      debugPrint("📞 [VideoCallScreen] Condition check:");
+      debugPrint("📞 [VideoCallScreen]   ✓ Is Connected: $isConnected");
+      debugPrint(
+        "📞 [VideoCallScreen]   ✓ Has Remote Stream: $hasRemoteStream",
+      );
+      debugPrint(
+        "📞 [VideoCallScreen]   ✓ Protection Active: $isProtectionActive",
+      );
+
+      if (isConnected && hasRemoteStream && isProtectionActive) {
         debugPrint(
-          "🚀 [VideoCallScreen] Triggering auto-start (connected + protection ON)",
+          "🚀 [VideoCallScreen] ✅ ALL CONDITIONS MET - Triggering auto-start",
         );
-        // Connected & Protection ON -> Start
         _startInferenceIfPossible();
-      } else if (next.status == CallStatus.ended) {
+      } else {
+        debugPrint(
+          "⚠️ [VideoCallScreen] ❌ Conditions NOT met - NOT starting inference",
+        );
+      }
+
+      if (next.status == CallStatus.ended) {
         debugPrint("🛑 [VideoCallScreen] Call ended, stopping inference");
         _inferenceService.stop();
+      }
+      debugPrint(
+        "📞 [VideoCallScreen] ═══════════════════════════════════════",
+      );
+    });
+
+    // CRITICAL FIX: Check initial state after frame builds
+    // The listener only catches CHANGES, not initial state
+    // If call is already connected when this screen loads, we need to start manually
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final callState = ref.read(callProvider);
+      final isProtectionOn = ref.read(garimProtectionProvider);
+
+      debugPrint("🔍 [VideoCallScreen] PostFrame Check:");
+      debugPrint("   - Call Status: ${callState.status}");
+      debugPrint(
+        "   - Remote srcObject: ${callState.remoteRenderer.srcObject}",
+      );
+      debugPrint("   - Protection: $isProtectionOn");
+
+      if (callState.status == CallStatus.connected &&
+          callState.remoteRenderer.srcObject != null &&
+          isProtectionOn) {
+        debugPrint(
+          "🚀 [VideoCallScreen] PostFrame: Call already connected! Starting inference",
+        );
+        _startInferenceIfPossible();
       }
     });
   }

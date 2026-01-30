@@ -23,8 +23,8 @@ class _CallingScreenState extends State<CallingScreen>
       duration: const Duration(milliseconds: 1200), // 조금 더 여유로운 박동
     )..repeat(reverse: true);
 
-    // 3초 후 자동으로 통화 화면으로 전환
-    Future.delayed(const Duration(seconds: 3), () {
+    // 2초 후 자동으로 통화 화면으로 전환
+    Future.delayed(const Duration(seconds: 2), () {
       if (mounted) {
         context.go('/call');
       }
