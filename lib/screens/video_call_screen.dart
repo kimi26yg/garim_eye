@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
@@ -41,28 +42,31 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
   }
 
   void _initInference() {
+    debugPrint("🟢 [VideoCallScreen] _initInference called");
     _inferenceService.initialize();
 
+    final isProtectionOn = ref.read(garimProtectionProvider);
+    debugPrint(
+      "🔍 [VideoCallScreen] Garim Protection initial state: $isProtectionOn",
+    );
+
     // Auto-start if 'Garim' is active by default
-    if (ref.read(garimProtectionProvider)) {
-      // We need a remote track. We'll listen to callProvider changes or try to start when connected.
-      // For now, let's just listen to state updates.
+    if (isProtectionOn) {
+      debugPrint(
+        "🛡️ [VideoCallScreen] Protection is ON, will auto-start when connected",
+      );
     }
 
     _inferenceService.stateStream.listen((state) {
       if (mounted) {
         // Update Risk Level
         final RiskLevel newLevel;
-        switch (state.status) {
-          case DetectionStatus.safe:
-            newLevel = RiskLevel.safe;
-            break;
-          case DetectionStatus.warning:
-            newLevel = RiskLevel.warning;
-            break;
-          case DetectionStatus.danger:
-            newLevel = RiskLevel.critical;
-            break;
+        if (state.status == DetectionStatus.danger) {
+          newLevel = RiskLevel.critical;
+        } else if (state.status == DetectionStatus.warning) {
+          newLevel = RiskLevel.warning;
+        } else {
+          newLevel = RiskLevel.safe;
         }
         // Only update if changed prevents unnecessary rebuilds, but simple set is fine
         ref.read(riskLevelProvider.notifier).state = newLevel;
@@ -70,25 +74,72 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
     });
 
     // Listen to Call Status to Auto-Start/Stop Inference
+    debugPrint("🔗 [VideoCallScreen] Registering call status listener");
     ref.listenManual(callProvider, (previous, next) {
+      debugPrint(
+        "📞 [VideoCallScreen] Call status changed: ${previous?.status} -> ${next.status}",
+      );
+
       if (next.status == CallStatus.connected &&
           next.remoteRenderer.srcObject != null &&
           ref.read(garimProtectionProvider)) {
+        debugPrint(
+          "🚀 [VideoCallScreen] Triggering auto-start (connected + protection ON)",
+        );
         // Connected & Protection ON -> Start
         _startInferenceIfPossible();
       } else if (next.status == CallStatus.ended) {
+        debugPrint("🛑 [VideoCallScreen] Call ended, stopping inference");
         _inferenceService.stop();
       }
     });
   }
 
-  Future<void> _startInferenceIfPossible() async {
+  Future<void> _startInferenceIfPossible([int retryCount = 0]) async {
+    debugPrint(
+      "🔍 [VideoCallScreen] _startInferenceIfPossible called (retry: $retryCount)",
+    );
+
     final remote = ref.read(callProvider).remoteRenderer;
+    final status = ref.read(callProvider).status;
+
+    debugPrint("🔍 [VideoCallScreen] Call status: $status");
+
+    // Safety check: Don't retry if call ended
+    if (status != CallStatus.connected) {
+      debugPrint(
+        "⚠️ [VideoCallScreen] Call not connected, aborting inference start",
+      );
+      return;
+    }
+
+    debugPrint(
+      "🔍 [VideoCallScreen] srcObject: ${remote.srcObject}, tracks: ${remote.srcObject?.getVideoTracks().length ?? 0}",
+    );
+
     if (remote.srcObject != null &&
         remote.srcObject!.getVideoTracks().isNotEmpty) {
       final track = remote.srcObject!.getVideoTracks().first;
+      debugPrint(
+        "✅ [VideoCallScreen] Starting inference with track: ${track.id}",
+      );
       await _inferenceService.start(track);
-      debugPrint("[VideoCallScreen] Inference Started via Policy");
+      debugPrint(
+        "[VideoCallScreen] Inference Started via Policy (Retry: $retryCount)",
+      );
+    } else {
+      // Retry up to 10 times (5 seconds) if connected but no stream yet
+      if (retryCount < 10) {
+        debugPrint(
+          "⏳ [VideoCallScreen] No track yet, retrying inference start... ($retryCount)",
+        );
+        await Future.delayed(const Duration(milliseconds: 500));
+        if (mounted) _startInferenceIfPossible(retryCount + 1);
+      } else {
+        debugPrint(
+          "❌ [VideoCallScreen] Max retries reached, no video track available",
+        );
+      }
     }
   }
 
@@ -153,8 +204,36 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
     }
   }
 
+  // --- Haptic Feedback Logic ---
+
+  Timer? _hapticTimer;
+
+  void _handleHapticFeedback(RiskLevel level) {
+    _cancelHapticTimer();
+
+    switch (level) {
+      case RiskLevel.safe:
+        break;
+      case RiskLevel.warning:
+        HapticFeedback.mediumImpact(); // Once
+        break;
+      case RiskLevel.critical:
+        HapticFeedback.heavyImpact(); // Immediate
+        _hapticTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+          HapticFeedback.heavyImpact();
+        });
+        break;
+    }
+  }
+
+  void _cancelHapticTimer() {
+    _hapticTimer?.cancel();
+    _hapticTimer = null;
+  }
+
   @override
   void dispose() {
+    _cancelHapticTimer();
     _pulseController.dispose();
     _slowPulseController.dispose();
     _inferenceService.dispose();
@@ -178,17 +257,14 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
     final isGarimActive = ref.watch(garimProtectionProvider);
     final pipPosition = ref.watch(pipPositionProvider);
     final demoPos = ref.watch(demoPanelPositionProvider);
-
     final glowColor = _getGlowColor(riskLevel);
 
-    // Trigger haptics on critical state
+    // 1. Haptic Listener
     ref.listen(riskLevelProvider, (previous, next) {
-      if (next == RiskLevel.critical) {
-        HapticFeedback.vibrate();
-      }
+      _handleHapticFeedback(next);
     });
 
-    // Initialize PiP position if null
+    // 3. Initialize PiP position if null
     if (pipPosition == null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         final size = MediaQuery.of(context).size;
