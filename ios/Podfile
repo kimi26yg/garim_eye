@@ -33,6 +33,9 @@ target 'Runner' do
   # [핵심 수정] LSTM 등 복잡한 모델을 돌리기 위한 Flex Delegate 추가
   # 기존 'TensorFlowLiteC' 대신 아래 줄을 사용해야 합니다.
   pod 'TensorFlowLiteSelectTfOps', '2.12.0' 
+  
+  # Note: libyuv is already included in WebRTC framework
+  # We'll use WebRTC's built-in I420ToARGB function
 
   flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
   target 'RunnerTests' do

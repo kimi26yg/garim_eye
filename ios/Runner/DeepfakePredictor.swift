@@ -8,7 +8,7 @@ import Flutter
 class DeepfakePredictor {
     
     // --- Model & Requests ---
-    private var model: DeepfakeDetector_v3?
+    private var model: DeepfakeDetector_Final?
     private var faceDetectionRequest: VNDetectFaceRectanglesRequest?
     
     // --- State ---
@@ -26,15 +26,20 @@ class DeepfakePredictor {
     private let targetWidth = 224
     private let targetHeight = 224
     
+    // Performance Statistics
+    private var frameCount = 0
+    private var totalLatency: Double = 0
+    private var lastStatsTime = CFAbsoluteTimeGetCurrent()
+    
     init() {
         // Load Model (Synchronous)
         do {
             let config = MLModelConfiguration()
             config.computeUnits = .all  // GPU + Neural Engine
-            self.model = try DeepfakeDetector_v3(configuration: config)
-            print("✅ [CoreML] DeepfakeDetector_v3 loaded (Full-Native).")
+            self.model = try DeepfakeDetector_Final(configuration: config)
+            print("✅ [CoreML] DeepfakeDetector_Final loaded (Float32 model).")
         } catch {
-            fatalError("Failed to load DeepfakeDetector_v3: \(error)")
+            fatalError("Failed to load DeepfakeDetector_Final: \(error)")
         }
         
         setupVision()
@@ -177,16 +182,13 @@ class DeepfakePredictor {
     /// Process a single raw frame from Flutter
     /// Returns: Dictionary with status and metrics
     func processFrame(imageData: FlutterStandardTypedData) -> [String: Any] {
-        print("🔵 [Predictor] processFrame called, bytes: \(imageData.data.count)")
         let overallStart = CFAbsoluteTimeGetCurrent()
         
         // 1. Decode Image (Flutter Bytes -> UIImage)
         guard let image = UIImage(data: imageData.data),
               let cgImage = image.cgImage else {
-            print("🔴 [Predictor] Image decode FAILED")
-            return ["status": "error", "msg": "Invalid Image Data"]
+            return ["status": "error", "msg": "Image decode failed"]
         }
-        print("✅ [Predictor] Image decoded: \(cgImage.width)x\(cgImage.height)")
         
         // 2. Face Detection (Vision)
         let detectStart = CFAbsoluteTimeGetCurrent()
@@ -195,13 +197,11 @@ class DeepfakePredictor {
         do {
             try handler.perform([faceDetectionRequest!])
         } catch {
-            print("🔴 [Predictor] Vision request error: \(error)")
-            return ["status": "error", "msg": "Vision Request Failed"]
+            return ["status": "error", "msg": "Face detection failed"]
         }
         
         guard let observations = faceDetectionRequest?.results,
               !observations.isEmpty else {
-            print("⚠️ [Predictor] No faces detected in frame")
             return ["status": "skipped", "reason": "no_face"]
         }
         
@@ -209,8 +209,6 @@ class DeepfakePredictor {
             ($0.boundingBox.width * $0.boundingBox.height) > 
             ($1.boundingBox.width * $1.boundingBox.height) 
         }).first!
-        
-        print("✅ [Predictor] Face detected: \(face.boundingBox)")
         
         let detectDuration = (CFAbsoluteTimeGetCurrent() - detectStart) * 1000
         
@@ -267,7 +265,6 @@ class DeepfakePredictor {
         bufferQueue.sync {
             frameBuffer.append(pixelFloats)
             currentCount = frameBuffer.count
-            print("📊 [Predictor] Buffer: \(currentCount)/20 frames")
         }
         
         if currentCount < 20 {
@@ -298,6 +295,8 @@ class DeepfakePredictor {
         
         let inferDuration = (CFAbsoluteTimeGetCurrent() - inferStart) * 1000
         
+        let totalDuration = (CFAbsoluteTimeGetCurrent() - overallStart) * 1000
+        trackPerformance(latency: totalDuration)
         return [
             "status": "inference",
             "score": predictionResult,
@@ -437,6 +436,28 @@ class DeepfakePredictor {
             }
             
             return floats
+        }
+    }
+    
+    // MARK: - Performance Statistics
+    
+    private func trackPerformance(latency: Double) {
+        frameCount += 1
+        totalLatency += latency
+        
+        let currentTime = CFAbsoluteTimeGetCurrent()
+        let elapsed = currentTime - lastStatsTime
+        
+        // Log stats every 5 seconds
+        if elapsed >= 5.0 {
+            let avgLatency = totalLatency / Double(frameCount)
+            let fps = Double(frameCount) / elapsed
+            print("📊 [Stats] Frames: \(frameCount), Avg Latency: \(Int(avgLatency))ms, FPS: \(String(format: "%.1f", fps))")
+            
+            // Reset counters
+            frameCount = 0
+            totalLatency = 0
+            lastStatsTime = currentTime
         }
     }
 }

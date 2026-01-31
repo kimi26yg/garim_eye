@@ -132,23 +132,23 @@ class DeepfakeInferenceService {
 
   Future<void> _handleFrame(Uint8List bytes) async {
     try {
-      debugPrint(
-        "📸 [InferenceService] Calling processFrame with ${bytes.length} bytes",
-      );
+      // debugPrint(
+      //   "📸 [InferenceService] Calling processFrame with ${bytes.length} bytes",
+      // );
 
       // 1. Send to Native Pipeline (Zero Logic in Dart)
       //    We send raw bytes. Native does Detection -> Crop -> Buffer -> Inference.
       //    This is async but we don't await to allow concurrent processing
       final result = await _channel.invokeMethod('processFrame', bytes);
 
-      debugPrint("📦 [InferenceService] Received result: $result");
+      // debugPrint("📦 [InferenceService] Received result: $result");
 
       if (result != null && result is Map) {
         _handleNativeResult(result);
       } else {
-        debugPrint(
-          "⚠️ [InferenceService] Result is null or not a Map: $result",
-        );
+        // debugPrint(
+        //   "⚠️ [InferenceService] Result is null or not a Map: $result",
+        // );
       }
     } catch (e, stackTrace) {
       debugPrint("❌ [InferenceService] Pipeline Error: $e");
@@ -157,9 +157,9 @@ class DeepfakeInferenceService {
   }
 
   void _handleNativeResult(Map result) {
-    debugPrint("🔄 [InferenceService] Processing native result: $result");
+    // debugPrint("🔄 [InferenceService] Processing native result: $result");
     final status = result['status'] as String;
-    debugPrint("📊 [InferenceService] Status: $status");
+    // debugPrint("📊 [InferenceService] Status: $status");
 
     // Update Pipeline FPS
     _pipelineFpsCounter++;
@@ -176,7 +176,7 @@ class DeepfakeInferenceService {
     final cropMs = (result['cropping_ms'] as num?)?.toDouble() ?? 0.0;
 
     if (status == "skipped") {
-      debugPrint("⏭️ [InferenceService] Frame skipped: ${result['reason']}");
+      // debugPrint("⏭️ [InferenceService] Frame skipped: ${result['reason']}");
       // Log skip?
       // _logSink?.writeln("... SKIPPED (${result['reason']}) ...");
       return;

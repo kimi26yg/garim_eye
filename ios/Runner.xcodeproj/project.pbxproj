@@ -11,7 +11,7 @@
 		0391EEE72F2C4A0500F37F59 /* DeepfakeDetector_v3.mlpackage in Sources */ = {isa = PBXBuildFile; fileRef = 0391EEE62F2C4A0500F37F59 /* DeepfakeDetector_v3.mlpackage */; };
 		0391EEE92F2C5B0000F37F59 /* CustomVideoSink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0391EEE82F2C5B0000F37F59 /* CustomVideoSink.swift */; };
 		0391EEEB2F2C6C0000F37F59 /* MethodSwizzler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0391EEEA2F2C6C0000F37F59 /* MethodSwizzler.swift */; };
-		1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */ = {isa = PBXBuildFile; fileRef = 1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */; };
+		03CA26752F2D959900C3CBAF /* DeepfakeDetector_Final.mlpackage in Sources */ = {isa = PBXBuildFile; fileRef = 03CA26742F2D959900C3CBAF /* DeepfakeDetector_Final.mlpackage */; };
 		1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */ = {isa = PBXBuildFile; fileRef = 1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */; };
 		331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C807B294A618700263BE5 /* RunnerTests.swift */; };
 		3B3967161E833CAA004F5970 /* AppFrameworkInfo.plist in Resources */ = {isa = PBXBuildFile; fileRef = 3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */; };
@@ -51,7 +51,7 @@
 		0391EEE62F2C4A0500F37F59 /* DeepfakeDetector_v3.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = folder.mlpackage; path = DeepfakeDetector_v3.mlpackage; sourceTree = "<group>"; };
 		0391EEE82F2C5B0000F37F59 /* CustomVideoSink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CustomVideoSink.swift; sourceTree = "<group>"; };
 		0391EEEA2F2C6C0000F37F59 /* MethodSwizzler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MethodSwizzler.swift; sourceTree = "<group>"; };
-		1498D2321E8E86230040F4C2 /* GeneratedPluginRegistrant.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GeneratedPluginRegistrant.h; sourceTree = "<group>"; };
+		03CA26742F2D959900C3CBAF /* DeepfakeDetector_Final.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = folder.mlpackage; path = DeepfakeDetector_Final.mlpackage; sourceTree = "<group>"; };
 		1498D2321E8E86230040F4C2 /* GeneratedPluginRegistrant.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GeneratedPluginRegistrant.h; sourceTree = "<group>"; };
 		1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = GeneratedPluginRegistrant.m; sourceTree = "<group>"; };
 		23129F96E059258DF0834536 /* Pods-Runner.profile.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.profile.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.profile.xcconfig"; sourceTree = "<group>"; };
@@ -160,6 +160,7 @@
 				0391EEE42F2C348000F37F59 /* DeepfakePredictor.swift */,
 				0391EEE82F2C5B0000F37F59 /* CustomVideoSink.swift */,
 				0391EEEA2F2C6C0000F37F59 /* MethodSwizzler.swift */,
+				03CA26742F2D959900C3CBAF /* DeepfakeDetector_Final.mlpackage */,
 				0391EEE62F2C4A0500F37F59 /* DeepfakeDetector_v3.mlpackage */,
 			);
 			path = Runner;
@@ -409,6 +410,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				03CA26752F2D959900C3CBAF /* DeepfakeDetector_Final.mlpackage in Sources */,
 				74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */,
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
 				0391EEE52F2C348000F37F59 /* DeepfakePredictor.swift in Sources */,

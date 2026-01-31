@@ -115,22 +115,78 @@ import WebRTC
           
           print("🔵 [AppDelegate] Attaching sink to track: \(trackId)")
           
-          // Use KVC/Reflection to access localTracks property
-          // Note: "localTracks" is a property of FlutterWebRTCPlugin
+          // 1. Check Local Tracks (our camera)
+          print("🔍 [AppDelegate] Checking LOCAL tracks...")
           if let localTracks = plugin.value(forKey: "localTracks") as? [String: Any] {
+              print("   📋 Found \(localTracks.count) local tracks")
+              for (id, _) in localTracks {
+                  print("   - Local track ID: \(id)")
+              }
               if let track = localTracks[trackId] as? RTCVideoTrack {
-                  print("✅ [AppDelegate] Track found! Adding renderer.")
+                  print("✅ [AppDelegate] MATCH in LOCAL tracks: \(trackId)")
                   track.add(self.customVideoSink!)
                   result(true)
                   return
               }
+          } else {
+              print("   ⚠️ localTracks is nil or wrong type")
           }
           
-          // Check remote tracks via peer connections if needed (omitted for local preview focus)
-          // Ideally check: Plugin -> peerConnections -> remoteTracks
+          // 2. Check Remote Tracks (incoming video from peer) - CRITICAL FOR DEEPFAKE DETECTION
+          print("🔍 [AppDelegate] Checking REMOTE tracks via peerConnections...")
           
+          // Debug: Check what peerConnections contains
+          if let peerConnectionsRaw = plugin.value(forKey: "peerConnections") {
+              print("   📋 peerConnections type: \(type(of: peerConnectionsRaw))")
+              
+              if let peerConnections = peerConnectionsRaw as? [String: RTCPeerConnection] {
+                  print("   📋 Found \(peerConnections.count) peer connections")
+                  
+                  for (connId, peerConnection) in peerConnections {
+                      print("   🔍 Searching in peerConnection: \(connId)")
+                      print("      Transceivers count: \(peerConnection.transceivers.count)")
+                      
+                      // Check all transceivers for remote tracks
+                      for (index, transceiver) in peerConnection.transceivers.enumerated() {
+                          print("      [Transceiver \(index)]")
+                          let receiver = transceiver.receiver
+                          if let remoteTrack = receiver.track {
+                              print("         Track ID: \(remoteTrack.trackId)")
+                              print("         Track kind: \(remoteTrack.kind)")
+                              
+                              if let videoTrack = remoteTrack as? RTCVideoTrack {
+                                  if videoTrack.trackId == trackId {
+                                      print("✅ [AppDelegate] MATCH! Attaching to REMOTE video track")
+                                      videoTrack.add(self.customVideoSink!)
+                                      result(true)
+                                      return
+                                  }
+                              }
+                          } else {
+                              print("         No track in receiver")
+                          }
+                      }
+                  }
+              } else {
+                  print("   ⚠️ peerConnections is not [String: RTCPeerConnection]")
+                  print("   Trying alternative cast...")
+                  
+                  // Try alternative: Maybe it's stored differently
+                  if let dict = peerConnectionsRaw as? [String: Any] {
+                      print("   📋 peerConnections is [String: Any] with \(dict.count) entries")
+                      for (key, value) in dict {
+                          print("      Key: \(key), Value type: \(type(of: value))")
+                      }
+                  }
+              }
+          } else {
+              print("   ⚠️ peerConnections key not found in plugin")
+          }
+          
+          // 3. Not found anywhere
           print("🔴 [AppDelegate] Track not found with ID: \(trackId)")
-          result(FlutterError(code: "TRACK_NOT_FOUND", message: "Track not found", details: nil))
+          print("   Searched in local tracks and all peer connections")
+          result(FlutterError(code: "TRACK_NOT_FOUND", message: "Track not found in local or remote", details: nil))
           
       } else if call.method == "detach" {
           // Detach logic (simplified)

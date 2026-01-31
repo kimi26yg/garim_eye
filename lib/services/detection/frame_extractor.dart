@@ -14,7 +14,7 @@ class FrameExtractor {
   Future<void> startExtraction(MediaStreamTrack track) async {
     if (_isExtracting) return;
     _isExtracting = true;
-    debugPrint("[FrameExtractor] Starting extraction on track ${track.id}");
+    // debugPrint("[FrameExtractor] Starting extraction on track ${track.id}");
 
     // Start extraction loop WITHOUT await to run in parallel
     _extractionLoop(track);
@@ -35,24 +35,24 @@ class FrameExtractor {
           _frameController.add(result.asUint8List());
 
           // Log every 20 frames to track FPS
-          if (frameCount % 20 == 0) {
-            final totalSeconds =
-                DateTime.now().difference(loopStart).inMilliseconds / 1000.0;
-            final actualFps = frameCount / totalSeconds;
-            debugPrint(
-              "[FrameExtractor] Captured $frameCount frames in ${totalSeconds.toStringAsFixed(1)}s (${actualFps.toStringAsFixed(1)} FPS)",
-            );
-          }
+          // if (frameCount % 20 == 0) {
+          //   final totalSeconds =
+          //       DateTime.now().difference(loopStart).inMilliseconds / 1000.0;
+          //   final actualFps = frameCount / totalSeconds;
+          //   debugPrint(
+          //     "[FrameExtractor] Captured $frameCount frames in ${totalSeconds.toStringAsFixed(1)}s (${actualFps.toStringAsFixed(1)} FPS)",
+          //   );
+          // }
         } else if (result is List<int>) {
           frameCount++;
           _frameController.add(Uint8List.fromList(result));
         } else {
-          debugPrint(
-            "[FrameExtractor] ⚠️ Unexpected result type: ${result.runtimeType}",
-          );
+          // debugPrint(
+          //   "[FrameExtractor] ⚠️ Unexpected result type: ${result.runtimeType}",
+          // );
         }
       } catch (e) {
-        debugPrint("[FrameExtractor] ❌ Capture error: $e");
+        // debugPrint("[FrameExtractor] ❌ Capture error: $e");
       }
 
       final elapsed = DateTime.now().difference(start).inMilliseconds;
@@ -60,23 +60,23 @@ class FrameExtractor {
       final delay = (50 - elapsed).clamp(5, 50);
 
       // Debug slow captures
-      if (elapsed > 30) {
-        debugPrint(
-          "[FrameExtractor] ⚠️ Slow capture: ${elapsed}ms (delay: ${delay}ms)",
-        );
-      }
+      // if (elapsed > 30) {
+      //   debugPrint(
+      //     "[FrameExtractor] ⚠️ Slow capture: ${elapsed}ms (delay: ${delay}ms)",
+      //   );
+      // }
 
       await Future.delayed(Duration(milliseconds: delay));
     }
 
-    debugPrint(
-      "[FrameExtractor] Loop ended. Total frames captured: $frameCount",
-    );
+    // debugPrint(
+    //   "[FrameExtractor] Loop ended. Total frames captured: $frameCount",
+    // );
   }
 
   void stopExtraction() {
     _isExtracting = false;
-    debugPrint("[FrameExtractor] Stopped extraction");
+    // debugPrint("[FrameExtractor] Stopped extraction");
   }
 
   void dispose() {

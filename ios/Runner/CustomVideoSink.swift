@@ -1,6 +1,7 @@
 import Foundation
 import WebRTC
 import Flutter
+// Note: libyuv functions are available through WebRTC framework
 
 // MARK: - Custom Video Sink for Deepfake Detection
 class CustomVideoSink: NSObject {
@@ -86,11 +87,88 @@ extension CustomVideoSink {
             return cvBuffer.pixelBuffer
         }
         
-        // For now,  skip I420 buffers to avoid WebRTC API compatibility issues
-        // TODO: Implement I420 conversion when WebRTC API is stable
-        print("🔴 [CustomVideoSink] Unsupported buffer type: \(type(of: buffer))")
-        print("⚠️ [CustomVideoSink] Only RTCCVPixelBuffer supported currently")
-        return nil
+        // Case B: Convert any buffer to I420 first, then to CVPixelBuffer
+        print("🔄 [CustomVideoSink] Converting buffer to I420 format...")
+        let i420Buffer = buffer.toI420()
+        return convertI420ToCVPixelBuffer(i420Buffer, width: Int(frame.width), height: Int(frame.height))
+    }
+    
+    /// Convert I420 (YUV420) buffer to CVPixelBuffer
+    /// Uses manual YUV to RGB conversion since libyuv is not available
+    private func convertI420ToCVPixelBuffer(_ i420Buffer: RTCI420BufferProtocol, width: Int, height: Int) -> CVPixelBuffer? {
+        // Create CVPixelBuffer in BGRA format
+        var pixelBuffer: CVPixelBuffer?
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            width,
+            height,
+            kCVPixelFormatType_32BGRA,
+            [
+                kCVPixelBufferCGImageCompatibilityKey: true,
+                kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+                kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary
+            ] as CFDictionary,
+            &pixelBuffer
+        )
+        
+        guard status == kCVReturnSuccess, let buffer = pixelBuffer else {
+            print("🔴 [CustomVideoSink] Failed to create CVPixelBuffer: \(status)")
+            return nil
+        }
+        
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+        
+        guard let destAddress = CVPixelBufferGetBaseAddress(buffer) else {
+            print("🔴 [CustomVideoSink] Failed to get CVPixelBuffer base address")
+            return nil
+        }
+        
+        let destStride = CVPixelBufferGetBytesPerRow(buffer)
+        let dest = destAddress.assumingMemoryBound(to: UInt8.self)
+        
+        // Get YUV data
+        let srcY = i420Buffer.dataY
+        let srcU = i420Buffer.dataU
+        let srcV = i420Buffer.dataV
+        let strideY = Int(i420Buffer.strideY)
+        let strideU = Int(i420Buffer.strideU)
+        let strideV = Int(i420Buffer.strideV)
+        
+        // Manual YUV to RGB conversion
+        for y in 0..<height {
+            for x in 0..<width {
+                let yIndex = y * strideY + x
+                let uvY = y / 2
+                let uvX = x / 2
+                let uIndex = uvY * strideU + uvX
+                let vIndex = uvY * strideV + uvX
+                
+                let yValue = Int(srcY[yIndex])
+                let uValue = Int(srcU[uIndex]) - 128
+                let vValue = Int(srcV[vIndex]) - 128
+                
+                // YUV to RGB conversion formula
+                var r = Double(yValue) + (1.370705 * Double(vValue))
+                var g = Double(yValue) - (0.337633 * Double(uValue)) - (0.698001 * Double(vValue))
+                var b = Double(yValue) + (1.732446 * Double(uValue))
+                
+                // Clamp to 0-255
+                r = min(max(r, 0), 255)
+                g = min(max(g, 0), 255)
+                b = min(max(b, 0), 255)
+                
+                // Write BGRA
+                let destIndex = y * destStride + x * 4
+                dest[destIndex] = UInt8(b)     // B
+                dest[destIndex + 1] = UInt8(g) // G
+                dest[destIndex + 2] = UInt8(r) // R
+                dest[destIndex + 3] = 255      // A
+            }
+        }
+        
+        print("✅ [CustomVideoSink] I420 -> CVPixelBuffer conversion successful (\(width)x\(height))")
+        return buffer
     }
 }
 
