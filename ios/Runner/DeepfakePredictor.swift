@@ -2,6 +2,7 @@ import Foundation
 import CoreML
 import Vision
 import UIKit
+import Accelerate
 import Flutter
 
 @available(iOS 14.0, *)
@@ -22,6 +23,9 @@ class DeepfakePredictor {
     
     // Serial queue for thread-safe buffer access
     private let bufferQueue = DispatchQueue(label: "com.garim.eye.frameBuffer")
+    
+    // Reusable CIContext
+    private let ciContext = CIContext()
     
     private let targetWidth = 224
     private let targetHeight = 224
@@ -57,9 +61,8 @@ class DeepfakePredictor {
     func processPixelBuffer(_ pixelBuffer: CVPixelBuffer) -> [String: Any]? {
         // 1. Convert CVPixelBuffer → CGImage
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-        let context = CIContext(options: nil)
-        
-        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
+        // Optimization: Use shared CIContext
+        guard let cgImage = self.ciContext.createCGImage(ciImage, from: ciImage.extent) else {
             print("🔴 [Predictor] Failed to convert CVPixelBuffer to CGImage")
             return ["status": "error", "msg": "CVPixelBuffer conversion failed"]
         }
@@ -322,16 +325,19 @@ class DeepfakePredictor {
             guard t < frameData.count else { break }
             let frameFloats = frameData[t]
             
-            for y in 0..<224 {
-                for x in 0..<224 {
-                    let srcIdx = (y * 224 + x) * 3
-                    let destIdx = t * (224 * 224 * 3) + y * (224 * 3) + x * 3
-                    
-                    dataPtr[destIdx] = frameFloats[srcIdx]
-                    dataPtr[destIdx + 1] = frameFloats[srcIdx + 1]
-                    dataPtr[destIdx + 2] = frameFloats[srcIdx + 2]
+            // Fast Copy (memcpy)
+            let copyStart = CFAbsoluteTimeGetCurrent()
+            
+            // Destination offset: t * (224 * 224 * 3)
+            let frameSize = 224 * 224 * 3
+            let destOffset = t * frameSize
+            
+            frameFloats.withUnsafeBufferPointer { srcBuffer in
+                if let srcAddress = srcBuffer.baseAddress {
+                    dataPtr.advanced(by: destOffset).assign(from: srcAddress, count: frameSize)
                 }
             }
+            // print("⏱️ [Batching] Frame \(t) copy time: \((CFAbsoluteTimeGetCurrent() - copyStart) * 1000)ms")
         }
 
         
@@ -402,40 +408,60 @@ class DeepfakePredictor {
     }
     
     private func getNormalizedPixels(cgImage: CGImage) -> [Float32]? {
-        return autoreleasepool {
+        return autoreleasepool { () -> [Float32]? in
             let width = cgImage.width
             let height = cgImage.height
-            let totalBytes = width * height * 4
             
-            var pixelData = [UInt8](repeating: 0, count: totalBytes)
+            let normStart = CFAbsoluteTimeGetCurrent()
+            
+            // 1. Create a vImage buffer from the CGImage
+            // Fix: Use a local variable for ColorSpace to ensure ARC manages it, 
+            // and passUnretained to avoid leaking a retained reference in the struct.
             let colorSpace = CGColorSpaceCreateDeviceRGB()
             
-            // Fix BitmapInfo for correct RGBA
-            let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
-            
-            guard let context = CGContext(
-                data: &pixelData,
-                width: width,
-                height: height,
+            // Setup source buffer
+            var format = vImage_CGImageFormat(
                 bitsPerComponent: 8,
-                bytesPerRow: width * 4,
-                space: colorSpace,
-                bitmapInfo: bitmapInfo
-            ) else { return nil }
+                bitsPerPixel: 32,
+                colorSpace: Unmanaged.passUnretained(colorSpace),
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
+                version: 0,
+                decode: nil,
+                renderingIntent: .defaultIntent
+            )
             
-            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)))
+            var sourceBuffer = vImage_Buffer()
+            var error = vImageBuffer_InitWithCGImage(&sourceBuffer, &format, nil, cgImage, vImage_Flags(kvImageNoFlags))
             
-            // Convert to Float32 RGB [0..1]
-            var floats = [Float32](repeating: 0, count: width * height * 3)
+            if error != kvImageNoError { return nil }
+            defer { free(sourceBuffer.data) }
             
-            for i in 0..<(width * height) {
-                let offset = i * 4
-                floats[i*3]     = Float32(pixelData[offset]) / 255.0
-                floats[i*3 + 1] = Float32(pixelData[offset + 1]) / 255.0
-                floats[i*3 + 2] = Float32(pixelData[offset + 2]) / 255.0
+            // 2. Convert RGBA8888 -> RGB888
+            let rgbBytesPerRow = width * 3
+            let rgbData = malloc(height * rgbBytesPerRow)
+            var rgbBuffer = vImage_Buffer(data: rgbData, height: vImagePixelCount(height), width: vImagePixelCount(width), rowBytes: rgbBytesPerRow)
+            defer { free(rgbData) }
+            
+            error = vImageConvert_RGBA8888toRGB888(&sourceBuffer, &rgbBuffer, vImage_Flags(kvImageNoFlags))
+            if error != kvImageNoError { return nil }
+            
+            // 3. Convert UInt8 -> Float32 and Normalize (0..255 -> 0..1)
+            let pixelCount = width * height * 3
+            var floatPixels = [Float32](repeating: 0, count: pixelCount)
+            
+            let uint8Ptr = rgbData!.assumingMemoryBound(to: UInt8.self)
+            
+            // Vectorized Conversion
+            vDSP_vfltu8(uint8Ptr, 1, &floatPixels, 1, vDSP_Length(pixelCount))
+            var divisor: Float = 255.0
+            vDSP_vsdiv(floatPixels, 1, &divisor, &floatPixels, 1, vDSP_Length(pixelCount))
+            
+            let normDuration = (CFAbsoluteTimeGetCurrent() - normStart) * 1000
+            if normDuration > 10.0 { // Log only if it takes significant time, or remove check to show all
+                 print("⚡️ [Accelerate] Normalization: \(String(format: "%.2f", normDuration))ms")
             }
             
-            return floats
+            return floatPixels
         }
     }
     
