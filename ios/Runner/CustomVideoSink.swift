@@ -6,7 +6,7 @@ import Flutter
 // MARK: - Custom Video Sink for Deepfake Detection
 class CustomVideoSink: NSObject {
     // Reference to predictor
-    private var predictor: DeepfakePredictor?
+    // private var predictor: DeepfakePredictor?
     
     // EventSink for sending results to Dart
     private var eventSink: FlutterEventSink?
@@ -19,15 +19,15 @@ class CustomVideoSink: NSObject {
     private var frameCount: Int = 0
     private var lastLogTime: CFAbsoluteTime = 0
     
-    override init() {
-        super.init()
-        if #available(iOS 14.0, *) {
-            self.predictor = DeepfakePredictor()
-            print("✅ [CustomVideoSink] Initialized with predictor")
-        } else {
-            print("⚠️ [CustomVideoSink] iOS 14.0+ required for predictor")
-        }
-    }
+    // override init() {
+    //     super.init()
+    //     if #available(iOS 14.0, *) {
+    //         // self.predictor = DeepfakePredictor()
+    //         // print("✅ [CustomVideoSink] Initialized with predictor")
+    //     } else {
+    //         print("⚠️ [CustomVideoSink] iOS 14.0+ required for predictor")
+    //     }
+    // }
 }
 
 // MARK: - RTCVideoRenderer Protocol
@@ -175,15 +175,15 @@ extension CustomVideoSink {
 // MARK: - Frame Processing
 extension CustomVideoSink {
     private func processPixelBuffer(_ pixelBuffer: CVPixelBuffer) {
-        guard let predictor = self.predictor else {
-            print("⚠️ [CustomVideoSink] Predictor not available")
-            return
-        }
+        // guard let predictor = self.predictor else {
+        //     print("⚠️ [CustomVideoSink] Predictor not available")
+        //     return
+        // }
         
-        // Call DeepfakePredictor's new method
-        if let result = predictor.processPixelBuffer(pixelBuffer) {
-            sendResultToDart(result)
-        }
+        // // Call DeepfakePredictor's new method
+        // if let result = predictor.processPixelBuffer(pixelBuffer) {
+        //     sendResultToDart(result)
+        // }
     }
     
     private func sendResultToDart(_ result: [String: Any]) {

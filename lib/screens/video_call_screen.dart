@@ -11,6 +11,7 @@ import '../providers/app_providers.dart';
 import '../providers/call_provider.dart';
 import '../theme/app_theme.dart';
 import '../services/detection/deepfake_inference_service.dart';
+import '../widgets/deepfake_insight_panel.dart';
 
 class VideoCallScreen extends ConsumerStatefulWidget {
   const VideoCallScreen({super.key});
@@ -24,6 +25,9 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
   late AnimationController _pulseController;
   late AnimationController _slowPulseController;
   final DeepfakeInferenceService _inferenceService = DeepfakeInferenceService();
+
+  // UI State
+  bool _showInsightPanel = false; // Default closed
 
   @override
   void initState() {
@@ -507,8 +511,10 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
             child: GestureDetector(
               onPanUpdate: (details) {
                 final size = MediaQuery.of(context).size;
-                final pipWidth = 100.0;
-                final pipHeight = 140.0;
+
+                // Calculate PIP position
+                double pipWidth = size.width * 0.35;
+                double pipHeight = pipWidth * 1.33; // 3:4 Aspect Ratio
 
                 double newX = (pipPosition?.dx ?? 0) + details.delta.dx;
                 double newY = (pipPosition?.dy ?? 0) + details.delta.dy;
@@ -560,53 +566,81 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
                   icon: const Icon(Icons.arrow_back_ios, color: Colors.white),
                   onPressed: () => context.go('/'),
                 ),
-                InkWell(
-                  onTap: () => _toggleGarimProtection(isGarimActive),
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 300),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 8,
-                    ),
-                    decoration: BoxDecoration(
-                      color: isGarimActive
-                          ? AppTheme.riskLow.withValues(alpha: 0.2)
-                          : Colors.grey.withValues(alpha: 0.2), // Inactive Grey
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: isGarimActive
-                            ? AppTheme.riskLow
-                            : Colors.grey, // Inactive Grey
+                Row(
+                  children: [
+                    IconButton(
+                      icon: Icon(
+                        _showInsightPanel
+                            ? Icons.analytics
+                            : Icons.analytics_outlined,
+                        color: _showInsightPanel
+                            ? Colors.blueAccent
+                            : Colors.white70,
                       ),
-                      boxShadow: isGarimActive
-                          ? [
-                              BoxShadow(
-                                color: AppTheme.riskLow.withValues(alpha: 0.5),
-                                blurRadius: 12,
-                              ),
-                            ]
-                          : [],
+                      onPressed: () {
+                        setState(() {
+                          _showInsightPanel = !_showInsightPanel;
+                        });
+                      },
                     ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          isGarimActive ? Icons.shield : Icons.shield_outlined,
-                          size: 18,
-                          color: isGarimActive ? AppTheme.riskLow : Colors.grey,
+                    const SizedBox(width: 8),
+                    InkWell(
+                      onTap: () => _toggleGarimProtection(isGarimActive),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 300),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 8,
                         ),
-                        const SizedBox(width: 8),
-                        Text(
-                          isGarimActive ? 'GARIM ON' : 'GARIM OFF',
-                          style: TextStyle(
+                        decoration: BoxDecoration(
+                          color: isGarimActive
+                              ? AppTheme.riskLow.withValues(alpha: 0.2)
+                              : Colors.grey.withValues(
+                                  alpha: 0.2,
+                                ), // Inactive Grey
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
                             color: isGarimActive
                                 ? AppTheme.riskLow
-                                : Colors.grey,
-                            fontWeight: FontWeight.bold,
+                                : Colors.grey, // Inactive Grey
                           ),
+                          boxShadow: isGarimActive
+                              ? [
+                                  BoxShadow(
+                                    color: AppTheme.riskLow.withValues(
+                                      alpha: 0.5,
+                                    ),
+                                    blurRadius: 12,
+                                  ),
+                                ]
+                              : [],
                         ),
-                      ],
+                        child: Row(
+                          children: [
+                            Icon(
+                              isGarimActive
+                                  ? Icons.shield
+                                  : Icons.shield_outlined,
+                              size: 18,
+                              color: isGarimActive
+                                  ? AppTheme.riskLow
+                                  : Colors.grey,
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              isGarimActive ? 'GARIM ON' : 'GARIM OFF',
+                              style: TextStyle(
+                                color: isGarimActive
+                                    ? AppTheme.riskLow
+                                    : Colors.grey,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
-                  ),
+                  ],
                 ),
               ],
             ),
@@ -644,40 +678,25 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
               ],
             ),
           ),
-          Positioned(
-            left: demoPos.dx,
-            top: demoPos.dy,
-            child: GestureDetector(
-              onPanUpdate: (details) {
-                final size = MediaQuery.of(context).size;
-                // 버튼의 대략적인 크기 (가로 140, 세로 50 정도로 가정)
-                const btnWidth = 50.0;
-                const btnHeight = 50.0;
 
-                double newX = demoPos.dx + details.delta.dx;
-                double newY = demoPos.dy + details.delta.dy;
-
-                // 화면 밖으로 나가지 않게 가두기 (Clamping)
-                newX = newX.clamp(0.0, size.width - btnWidth);
-                newY = newY.clamp(0.0, size.height - btnHeight);
-
-                ref.read(demoPanelPositionProvider.notifier).state = Offset(
-                  newX,
-                  newY,
+          // 8. Insight Panel (Sidebar)
+          AnimatedPositioned(
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOutCubic,
+            right: _showInsightPanel ? 16 : -320,
+            top: 100,
+            bottom: 120,
+            width: 300,
+            child: StreamBuilder<DeepfakeState>(
+              stream: _inferenceService.stateStream,
+              builder: (context, snapshot) {
+                if (!snapshot.hasData) return const SizedBox.shrink();
+                return DeepfakeInsightPanel(
+                  state: snapshot.data!,
+                  onClose: () => setState(() => _showInsightPanel = false),
                 );
               },
-              child: FloatingActionButton(
-                backgroundColor: AppTheme.surface,
-                onPressed: () => _showDemoControlPanel(context, ref),
-                child: const Icon(Icons.tune, color: AppTheme.primary),
-              ),
             ),
-          ),
-          // Test Overlay
-          Positioned(
-            top: 100,
-            right: 20,
-            child: _DeepfakeMonitor(service: _inferenceService),
           ),
         ],
       ),
@@ -721,74 +740,6 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
         decoration: BoxDecoration(color: bgColor, shape: BoxShape.circle),
         child: Icon(icon, color: iconColor, size: 28),
       ),
-    );
-  }
-
-  void _showDemoControlPanel(BuildContext context, WidgetRef ref) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: AppTheme.surface,
-      builder: (context) {
-        return Container(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                'Demo Control Panel',
-                style: Theme.of(context).textTheme.titleLarge,
-              ),
-              const SizedBox(height: 20),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  _buildRiskButton(context, ref, RiskLevel.safe, 'Safe'),
-                  _buildRiskButton(context, ref, RiskLevel.warning, 'Warning'),
-                  _buildRiskButton(
-                    context,
-                    ref,
-                    RiskLevel.critical,
-                    'Critical',
-                  ),
-                ],
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildRiskButton(
-    BuildContext context,
-    WidgetRef ref,
-    RiskLevel level,
-    String label,
-  ) {
-    Color color;
-    switch (level) {
-      case RiskLevel.safe:
-        color = AppTheme.riskLow;
-        break;
-      case RiskLevel.warning:
-        color = AppTheme.riskMedium;
-        break;
-      case RiskLevel.critical:
-        color = AppTheme.riskHigh;
-        break;
-    }
-
-    return ElevatedButton(
-      style: ElevatedButton.styleFrom(
-        backgroundColor: color.withValues(alpha: 0.2),
-        foregroundColor: color,
-        side: BorderSide(color: color),
-      ),
-      onPressed: () {
-        ref.read(riskLevelProvider.notifier).state = level;
-        Navigator.pop(context); // Close the sheet
-      },
-      child: Text(label),
     );
   }
 }

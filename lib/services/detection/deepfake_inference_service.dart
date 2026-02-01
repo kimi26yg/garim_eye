@@ -25,18 +25,32 @@ class DetectionStatus {
 
 class DeepfakeState {
   final double rawScore;
-  final double confidence; // Moving Average
+  final double confidence; // Legacy EMA
   final DetectionStatus status;
+
+  // v4.5 Hybrid Metadata
+  final double fftScore;
+  final double fftVariance;
+  final bool isPenalized;
+  final double aiScore;
+  final double finalScore; // Native calculated
+  final double interval;
 
   DeepfakeState({
     required this.rawScore,
     required this.confidence,
     required this.status,
+    this.fftScore = 0.0,
+    this.fftVariance = 0.0,
+    this.isPenalized = false,
+    this.aiScore = 0.0,
+    this.finalScore = 0.0,
+    this.interval = 1.25,
   });
 
   @override
   String toString() =>
-      'State(conf: ${(confidence * 100).toStringAsFixed(1)}%, status: ${status.name})';
+      'State(final: $finalScore, status: ${status.name}, interval: $interval)';
 }
 
 // --- Service ---
@@ -121,34 +135,22 @@ class DeepfakeInferenceService {
     // Expected: 20 frames in ~3 seconds at 16.8 FPS
     _frameSub = _frameExtractor.frameStream.listen((bytes) {
       _frameCounter++;
-      // Note: We keep this for now as a fallback/dual-mode test
       unawaited(_handleFrame(bytes));
     });
 
     debugPrint(
-      "[InferenceService] Pipeline Started (Native-First + Method Channel Fallback).",
+      "[InferenceService] Pipeline Started (Dart -> Swift Bridge Restored).",
     );
   }
 
   Future<void> _handleFrame(Uint8List bytes) async {
     try {
-      // debugPrint(
-      //   "📸 [InferenceService] Calling processFrame with ${bytes.length} bytes",
-      // );
-
-      // 1. Send to Native Pipeline (Zero Logic in Dart)
+      // 1. Send to Native Pipeline
       //    We send raw bytes. Native does Detection -> Crop -> Buffer -> Inference.
-      //    This is async but we don't await to allow concurrent processing
       final result = await _channel.invokeMethod('processFrame', bytes);
-
-      // debugPrint("📦 [InferenceService] Received result: $result");
 
       if (result != null && result is Map) {
         _handleNativeResult(result);
-      } else {
-        // debugPrint(
-        //   "⚠️ [InferenceService] Result is null or not a Map: $result",
-        // );
       }
     } catch (e, stackTrace) {
       debugPrint("❌ [InferenceService] Pipeline Error: $e");
@@ -175,19 +177,37 @@ class DeepfakeInferenceService {
     final detectMs = (result['detection_ms'] as num?)?.toDouble() ?? 0.0;
     final cropMs = (result['cropping_ms'] as num?)?.toDouble() ?? 0.0;
 
-    if (status == "skipped") {
-      // debugPrint("⏭️ [InferenceService] Frame skipped: ${result['reason']}");
-      // Log skip?
-      // _logSink?.writeln("... SKIPPED (${result['reason']}) ...");
+    if (status == "skipped" || status == "collecting") {
+      // debugPrint("⏭️ [InferenceService] Frame skipped/collecting: $status");
+      // Do NOT emit state update here to prevent UI flicker (0.0 score)
       return;
     }
 
     if (status == "inference") {
-      final score = (result['score'] as num).toDouble();
-      final inferMs = (result['inference_ms'] as num).toDouble();
+      final score = (result['score'] as num?)?.toDouble() ?? 0.0;
+      final inferMs = (result['inference_ms'] as num?)?.toDouble() ?? 0.0;
+
+      // v4.5 Metadata
+      final fftScore = (result['fft_score'] as num?)?.toDouble() ?? 0.0;
+      final fftVariance = (result['fft_variance'] as num?)?.toDouble() ?? 0.0;
+      final isPenalized = (result['is_penalized'] as bool?) ?? false;
+      final aiScore = (result['ai_score'] as num?)?.toDouble() ?? 0.0;
+      final finalScore = (result['final_score'] as num?)?.toDouble() ?? 0.0;
+      final interval = (result['interval'] as num?)?.toDouble() ?? 1.25;
 
       // Intelligent Engine Logic
-      _processIntelligentScore(score, detectMs, cropMs, inferMs);
+      _processIntelligentScore(
+        score,
+        detectMs,
+        cropMs,
+        inferMs,
+        fftScore,
+        fftVariance,
+        isPenalized,
+        aiScore,
+        finalScore,
+        interval,
+      );
     }
   }
 
@@ -198,64 +218,56 @@ class DeepfakeInferenceService {
     double detectMs,
     double cropMs,
     double inferMs,
+    double fftScore,
+    double fftVariance,
+    bool isPenalized,
+    double aiScore,
+    double finalScore,
+    double interval,
   ) {
-    // 1. Fast-Trigger
-    bool fastTrigger = false;
-    if (rawCnnScore >= 0.95 && _previousRawScore >= 0.95) {
-      fastTrigger = true;
-    }
-    _previousRawScore = rawCnnScore;
+    // v4.5 Logic: Trust Native Final Score (0.0 ~ 10.0)
+    // Map Final Score to DetectionStatus
+    // Safe: >= 9.5 (Ultra), >= 8.0 (High)
+    // Warning: ???
+    // The previous logic used 0.7 (7.0) threshold for Danger.
 
-    // 2. Hybrid Fusion (Placeholder)
-    double fftScore = 0.0;
-    double beta = 1.0;
-    double hybridScore = (beta * rawCnnScore) + ((1 - beta) * fftScore);
-
-    // 3. EMA
-    const double alpha = 0.33;
-
-    if (_isFirstRun) {
-      _emaScore = hybridScore;
-      _isFirstRun = false;
-    } else {
-      if (fastTrigger) {
-        _emaScore = 0.95;
-      } else {
-        _emaScore = (alpha * hybridScore) + ((1 - alpha) * _emaScore);
-      }
-    }
-
-    // 4. Decision
     DetectionStatus status;
-    String triggerType = "NORMAL";
+    String triggerType = "HYBRID_v4.5";
 
-    if (fastTrigger) {
-      status = DetectionStatus.danger;
-      triggerType = "FAST_TRIGGER";
+    // v4.5 100-Point Scale Thresholds
+    // Ultra Safe: >= 95.0
+    // Safe: >= 80.0
+    // Warning: >= 40.0
+    // Danger: < 40.0
+    if (finalScore >= 95.0) {
+      status = DetectionStatus.safe;
+    } else if (finalScore >= 80.0) {
+      status = DetectionStatus.safe;
+    } else if (finalScore >= 40.0) {
+      status = DetectionStatus.warning;
     } else {
-      if (_emaScore >= 0.7) {
-        status = DetectionStatus.danger;
-      } else if (_emaScore >= 0.4) {
-        status = DetectionStatus.warning;
-      } else {
-        status = DetectionStatus.safe;
-      }
+      status = DetectionStatus.danger;
     }
 
-    // 5. Emit
     final state = DeepfakeState(
       rawScore: rawCnnScore,
-      confidence: _emaScore,
+      confidence: finalScore / 100.0, // Norm 0.0-1.0 for UI %
       status: status,
+      fftScore: fftScore,
+      fftVariance: fftVariance,
+      isPenalized: isPenalized,
+      aiScore: aiScore,
+      finalScore: finalScore,
+      interval: interval,
     );
     _stateController.add(state);
 
     // 6. Log
     _logInference(state, fftScore, triggerType, detectMs, cropMs, inferMs);
 
-    debugPrint(
-      "🎯 [Engine] $triggerType | Raw: ${rawCnnScore.toStringAsFixed(3)} | EMA: ${_emaScore.toStringAsFixed(3)} | Latency: ${detectMs + cropMs + inferMs}ms",
-    );
+    // debugPrint(
+    //   "🎯 [Engine] Hybrid: ${finalScore.toStringAsFixed(2)} | AI: $aiScore | FFT: $fftScore | Interval: $interval",
+    // );
   }
 
   // --- Logging & Utilities ---

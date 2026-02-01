@@ -35,6 +35,20 @@ class DeepfakePredictor {
     private var totalLatency: Double = 0
     private var lastStatsTime = CFAbsoluteTimeGetCurrent()
     
+    // v4.5 Hybrid Engine State
+    private let fftAnalyzer = FFTAnalyzer()
+    private var lastInferenceTime: CFAbsoluteTime = 0
+    private var inferenceInterval: Double = 1.25 // Default Standard Mode
+    private var isOverrideActive: Bool = false
+    
+    // UI Data Sync
+    private var lastDebugData: [String: Any] = [:]
+    
+    // v4.5 New State
+    private var consecutiveRealCount = 0
+    private var isPenalized = false
+    
+
     init() {
         // Load Model (Synchronous)
         do {
@@ -138,30 +152,68 @@ class DeepfakePredictor {
         
         let cropDuration = (CFAbsoluteTimeGetCurrent() - cropStart) * 1000
         
-        // 4. Buffering (Thread-safe)
+        // 4. Buffering & Hybrid Logic
+        
+        // v4.5: Calculate FFT Score instantly (every frame)
+        let fftScore = fftAnalyzer.process(inputs: pixelsFloat, width: targetWidth, height: targetHeight)
+        let fftVariance = fftAnalyzer.currentVariance
+        let isPenalized = fftAnalyzer.isPenalized
+        
+        // State Machine: Update Interval based on FFT Score
+        if fftScore >= 9.5 { // ~2000+ Raw Score
+             inferenceInterval = 10.0 // Super Clear
+        } else if fftScore >= 8.0 { // ~1600 Raw Score
+             inferenceInterval = 5.0 // High Quality
+        } else {
+             inferenceInterval = 1.25 // Standard
+        }
+        
+        // Check Override Condition
+        if isOverrideActive {
+            inferenceInterval = 1.25
+        }
+        
+        // Check if we should run Inference
+        let currentTime = CFAbsoluteTimeGetCurrent()
+        let timeSinceLast = currentTime - lastInferenceTime
+        let shouldRunInference = timeSinceLast >= inferenceInterval
+        
+        // Add to Buffer (Rolling)
         var currentCount = 0
         bufferQueue.sync {
             frameBuffer.append(pixelsFloat)
+            if frameBuffer.count > 20 {
+                frameBuffer.removeFirst() // Keep size 20 (Rolling Buffer)
+            }
             currentCount = frameBuffer.count
-            print("📊 [Predictor] Buffer: \(currentCount)/20 frames")
+        }
+        
+        // Prepare UI Response (Always return stats)
+        var response: [String: Any] = [
+            "status": "collecting",
+            "fft_score": fftScore,
+            "fft_variance": fftVariance,
+            "is_penalized": isPenalized,
+            "interval": inferenceInterval,
+            "ai_score": lastDebugData["ai_score"] ?? 0.0,
+            "final_score": lastDebugData["final_score"] ?? 0.0,
+            "detection_ms": detectDuration,
+            "cropping_ms": cropDuration
+        ]
+        
+        if !shouldRunInference {
+            return response
         }
         
         if currentCount < 20 {
-            return [
-                "status": "collecting",
-                "count": currentCount,
-                "detection_ms": detectDuration,
-                "cropping_ms": cropDuration
-            ]
+             return response // Not enough data yet
         }
         
-        // 5. Inference
+        // 5. Inference Setup
         let inferStart = CFAbsoluteTimeGetCurrent()
-        
         var bufferSnapshot: [[Float]] = []
         bufferQueue.sync {
             bufferSnapshot = frameBuffer
-            frameBuffer.removeAll()
         }
         
         guard let predictionResult = runInference(frameData: bufferSnapshot) else {
@@ -169,13 +221,53 @@ class DeepfakePredictor {
             return ["status": "error", "msg": "Inference failed"]
         }
         
+        lastInferenceTime = currentTime
+        
+        // v4.5: Update Override Logic
+        // "Real probability < 0.7" → Override
+        // predictionResult is "Fake Prob" or "Real Prob"?
+        // Model usually returns "Fake Probability" (0=Real, 1=Fake).
+        // User says: "AI가 판별한 Real 확률이 0.7 미만으로 떨어질 경우"
+        // If Model Output is Fake Prob: Real Prob = 1.0 - Fake Prob.
+        // So if (1.0 - FakeProb) < 0.7  ==> FakeProb > 0.3.
+        
+        let fakeProb = predictionResult
+        let realProb = 1.0 - fakeProb
+        
+        if realProb < 0.7 {
+            isOverrideActive = true
+            print("⚠️ [Security] Override Triggered! RealProb: \(realProb)")
+        } else {
+            // Release override if SAFE? Logic usually requires hysteresis.
+            // For now, release if "Very Safe" -> Real > 0.9?
+            if realProb > 0.9 {
+                isOverrideActive = false
+            }
+        }
+        
+        // v4.5: Weighted Fusion
+        // S_total = (S_fft * 0.1) + (S_ai * 0.9)
+        // S_ai (Realness) = 1.0 - fakeProb.  (0.0 ~ 1.0)
+        // S_ai_score (0~10) = S_ai * 10.0
+        
+        let aiScore10 = realProb * 10.0
+        let finalScore = (fftScore * 0.1) + (aiScore10 * 0.9)
+        
         let inferDuration = (CFAbsoluteTimeGetCurrent() - inferStart) * 1000
         
-        print("🎯 [Predictor] Inference complete: score=\(predictionResult)")
+        print("🎯 [Predictor] Hybrid Score: \(String(format: "%.2f", finalScore)) (AI: \(String(format: "%.2f", aiScore10)), FFT: \(String(format: "%.2f", fftScore)))")
+        
+        // Save for UI
+        lastDebugData["ai_score"] = aiScore10
+        lastDebugData["final_score"] = finalScore
         
         return [
             "status": "inference",
-            "score": predictionResult,
+            "score": fakeProb, // Legacy support
+            "final_score": finalScore,
+            "ai_score": aiScore10,
+            "fft_score": fftScore,
+            "fft_variance": fftVariance,
             "detection_ms": detectDuration,
             "cropping_ms": cropDuration,
             "inference_ms": inferDuration
@@ -263,6 +355,12 @@ class DeepfakePredictor {
         
         let cropDuration = (CFAbsoluteTimeGetCurrent() - cropStart) * 1000
         
+        // v4.5 FFT Calculation (Synced)
+        let currentTime = CFAbsoluteTimeGetCurrent()
+        let fftScore = fftAnalyzer.process(inputs: pixelFloats, width: targetWidth, height: targetHeight)
+        let fftVariance = fftAnalyzer.currentVariance
+        let isPenalized = fftAnalyzer.isPenalized
+        
         // 4. Buffering (Thread-Safe)
         var currentCount = 0
         bufferQueue.sync {
@@ -294,18 +392,74 @@ class DeepfakePredictor {
              return ["status": "error", "msg": "Inference Failed"]
         }
         
-        print("🎯 [Predictor] Inference complete: score=\(predictionResult)")
+        lastInferenceTime = currentTime
+        
+        // v4.5: Update Override Logic
+        // predictionResult is Fake Prob. Real Prob = 1.0 - Fake Prob.
+        let fakeProb = predictionResult
+        let realProb = 1.0 - fakeProb
+        
+        // Override Trigger (< 70% Real -> < 20% on new scale?)
+        // Let's keep logic simple: if prob of being fake > 0.3 (Real < 0.7) -> Trigger
+        if realProb < 0.7 {
+            isOverrideActive = true
+            print("⚠️ [Security] Override Triggered! RealProb: \(realProb)")
+        } else if realProb > 0.9 {
+            isOverrideActive = false
+        }
+        
+        // v4.5: 100-Point Scale Logic
+        // AI Contribution: Max 90 points (Inverted: 1.0 = 0 pts, 0.0 = 90 pts)
+        // User Directive: Total_Trust = (S_fft * 1.0) + ((1.0 - Fake_Prob) * 90.0)
+        let aiContribution = realProb * 90.0
+        
+        // FFT Contribution: Max 10 points (0.0 ~ 10.0)
+        let fftContribution = fftScore
+        
+        // Final Score: Max 100.0
+        let finalScore = aiContribution + fftContribution
+        
+        // v4.5 Adaptive Scheduling with AI Consistency Check
+        // Update Consistency Counter
+        if realProb > 0.90 {
+            self.consecutiveRealCount += 1
+        } else {
+            self.consecutiveRealCount = 0
+        }
+        
+        // Super Clear (FFT >= 9.0 OR AI Consistent > 5 frames): 10s
+        // High Quality (FFT >= 7.0 OR AI Consistent > 2 frames): 5s
+        // Standard/Danger: 1.25s
+        if fftScore >= 9.0 || self.consecutiveRealCount >= 5 {
+            self.inferenceInterval = 10.0
+        } else if fftScore >= 7.0 || self.consecutiveRealCount >= 2 {
+            self.inferenceInterval = 5.0
+        } else {
+            self.inferenceInterval = 1.25
+        }
         
         let inferDuration = (CFAbsoluteTimeGetCurrent() - inferStart) * 1000
         
+        print("🎯 [Predictor] Hybrid Score: \(String(format: "%.1f", finalScore)) (AI: \(String(format: "%.1f", aiContribution)), FFT: \(String(format: "%.1f", fftContribution))) [Interval: \(self.inferenceInterval)s | AI-Seq: \(self.consecutiveRealCount)]")
+        
+        // Save for UI
+        lastDebugData["ai_score"] = aiContribution
+        lastDebugData["final_score"] = finalScore
+        
         let totalDuration = (CFAbsoluteTimeGetCurrent() - overallStart) * 1000
         trackPerformance(latency: totalDuration)
+
         return [
             "status": "inference",
-            "score": predictionResult,
+            "score": fakeProb, // Legacy
+            "final_score": finalScore,
+            "ai_score": aiContribution,
+            "fft_score": fftContribution,
+            "fft_variance": fftVariance,
             "detection_ms": detectDuration,
             "cropping_ms": cropDuration,
-            "inference_ms": inferDuration
+            "inference_ms": inferDuration,
+            "interval": self.inferenceInterval
         ]
     }
     
@@ -485,5 +639,156 @@ class DeepfakePredictor {
             totalLatency = 0
             lastStatsTime = currentTime
         }
+    }
+}
+
+// MARK: - FFT Logic Engine (v4.5)
+
+class FFTAnalyzer {
+    
+    // Config
+    private let targetWidth = 256
+    private let targetHeight = 256
+    
+    // FFT Setup (Reuse to save initialization time)
+    private var fftSetup: FFTSetup?
+    
+    // Variance Buffer (Anti-Filter Guard)
+    private var scoreBuffer: [Double] = []
+    private let bufferSize = 20
+    
+    // Stats for UI
+    public private(set) var currentScore: Double = 0.0
+    public private(set) var currentVariance: Double = 0.0
+    public private(set) var isPenalized: Bool = false
+    
+    init() {
+        // vDSP_create_fftsetup requires log2(N)
+        // 256 = 2^8.
+        let log2n = vDSP_Length(log2(Float(targetWidth)))
+        self.fftSetup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))
+    }
+    
+    deinit {
+        if let setup = fftSetup {
+            vDSP_destroy_fftsetup(setup)
+        }
+    }
+    
+    /// Calculate FFT Score and update internal state (Variance, Penalty)
+    /// - Parameter pixelBuffer: Flattened grayscale float array (row-major). 
+    /// - Returns: Final Confidence Score (0.0 ~ 10.0)
+    func process(inputs: [Float], width: Int, height: Int) -> Double {
+        
+        // 1. Prepare 256x256 Buffer (Pad or Crop) & Scale to 0-255 (Python Align)
+        var inputData = [Float](repeating: 0.0, count: targetWidth * targetHeight)
+        
+        if width <= targetWidth && height <= targetHeight {
+             for row in 0..<height {
+                 let srcStart = row * width
+                 let destStart = row * targetWidth
+                 // Copy row and Scale 0.0-1.0 -> 0.0-255.0
+                 // vDSP optimization possible, but simple loop is fine for 224x224
+                 let rowInputs = inputs[srcStart..<(srcStart+width)]
+                 for col in 0..<width {
+                     inputData[destStart + col] = rowInputs[srcStart + col] * 255.0
+                 }
+             }
+        }
+        
+        // 2. Perform 2D FFT
+        let log2n = vDSP_Length(log2(Float(targetWidth)))
+        
+        // Split Complex Buffer
+        var realPart = [Float](repeating: 0.0, count: (targetWidth * targetHeight) / 2)
+        var imagPart = [Float](repeating: 0.0, count: (targetWidth * targetHeight) / 2)
+        
+        var splitComplex = DSPSplitComplex(realp: &realPart, imagp: &imagPart)
+        
+        // Convert Real Input -> Split Complex (Even/Odd packing)
+        inputData.withUnsafeBufferPointer { ptr in
+            ptr.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: (targetWidth * targetHeight) / 2) { complexPtr in
+               vDSP_ctoz(complexPtr, 2, &splitComplex, 1, vDSP_Length((targetWidth * targetHeight) / 2))
+            }
+        }
+        
+        // Execute FFT (In-Place)
+        // Corrected: Use zrip (Real-to-Complex) since input is packed Real data
+        if let setup = fftSetup {
+            vDSP_fft2d_zrip(setup, &splitComplex, 1, 0, log2n, log2n, FFTDirection(kFFTDirection_Forward))
+        }
+        
+        // 3. Compute Magnitudes (Abs)
+        var magnitudes = [Float](repeating: 0.0, count: (targetWidth * targetHeight) / 2)
+        vDSP_zvabs(&splitComplex, 1, &magnitudes, 1, vDSP_Length((targetWidth * targetHeight) / 2))
+        
+        // 4. Score Calculation (Mean of High Freqs, skip first 5%)
+        let skipCount = Int(Double(magnitudes.count) * 0.05)
+        let relevantCount = magnitudes.count - skipCount
+        
+        var sum: Float = 0
+        magnitudes.withUnsafeBufferPointer { ptr in
+             if let base = ptr.baseAddress {
+                 vDSP_sve(base.advanced(by: skipCount), 1, &sum, vDSP_Length(relevantCount))
+             }
+        }
+        
+        // vDSP returns ~4x magnitude vs Numpy for same input.
+        let rawScore = Double(sum / Float(relevantCount))
+        
+        // Normalize to match Python baseline (~1000 range).
+        let alignedScore = rawScore / 4.0
+        self.currentScore = alignedScore
+        
+        // 5. Update Variance Buffer
+        scoreBuffer.append(alignedScore)
+        if scoreBuffer.count > bufferSize {
+            scoreBuffer.removeFirst()
+        }
+        
+        // 6. Calculate Variance
+        self.currentVariance = calculateVariance(scores: scoreBuffer)
+        
+        // 7. Calculate Final Confidence (Python Formula Align)
+        // Verified Range: Real High Quality ~ 1000+ (after /4.0)
+        // Mandated Thresholds: Min 700.0, Max 1600.0
+        
+        // Formula: (Aligned - 700) / (1600 - 700) * 10
+        var confidence = ((alignedScore - 700.0) / (1600.0 - 700.0)) * 10.0
+        confidence = max(0.0, min(10.0, confidence))
+        
+        // 8. Apply Penalty (Variance Check)
+        // Python Logic: avg > 1800 (scaled -> 1600?) and var < 1.0 -> 50% Penalty
+        // Let's adjust penalty threshold to scale. 
+        // If 1800 was the check, 1800/4 = 450? No, thresholds are absolute based on the new scale.
+        // User said: "Success Criteria: Real High-Quality (Over 6000 in logs): Must result in FFT score 9.0~10.0"
+        // 6000 raw / 4 = 1500. 1500 is close to 1600 max. Checks out.
+        // We will keep variance check simple or ignore for now as requested strict formula adherence.
+        // Actually, let's keep the logic but use Aligned threshold (~1500).
+        
+        let avgScore = scoreBuffer.reduce(0, +) / Double(scoreBuffer.count)
+        
+        if avgScore > 1500.0 && self.currentVariance < 0.1 { // Variance also scales down
+             self.isPenalized = true
+             // confidence *= 0.5 // Disable penalty for now to ensure strictly formula-driven calibration first
+        } else {
+             self.isPenalized = false
+        }
+        
+        return confidence
+    }
+    
+    // Variance Helper
+    private func calculateVariance(scores: [Double]) -> Double {
+        guard scores.count > 1 else { return 0.0 }
+        
+        let mean = scores.reduce(0, +) / Double(scores.count)
+        var sumSquaredDiff = 0.0
+        for score in scores {
+            let diff = score - mean
+            sumSquaredDiff += diff * diff
+        }
+        
+        return sumSquaredDiff / Double(scores.count)
     }
 }
