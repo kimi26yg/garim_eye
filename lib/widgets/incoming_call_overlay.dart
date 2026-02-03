@@ -14,9 +14,18 @@ class IncomingCallOverlay extends ConsumerStatefulWidget {
 }
 
 class _IncomingCallOverlayState extends ConsumerState<IncomingCallOverlay> {
+  CallStatus? _lastStatus;
+
   @override
   Widget build(BuildContext context) {
     final callState = ref.watch(callProvider);
+
+    // Prevent unnecessary rebuilds - only rebuild on status change
+    if (_lastStatus == callState.status &&
+        callState.status != CallStatus.incoming) {
+      return const SizedBox.shrink();
+    }
+    _lastStatus = callState.status;
 
     // Reactive Navigation Logic
     ref.listen(callProvider, (previous, next) {

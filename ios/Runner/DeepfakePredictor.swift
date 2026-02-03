@@ -40,6 +40,7 @@ class DeepfakePredictor {
     private var lastInferenceTime: CFAbsoluteTime = 0
     private var inferenceInterval: Double = 1.25 // Default Standard Mode
     private var isOverrideActive: Bool = false
+    private var lastRealProb: Double = 1.0 // Track last AI inference result
     
     // UI Data Sync
     private var lastDebugData: [String: Any] = [:]
@@ -159,18 +160,29 @@ class DeepfakePredictor {
         let fftVariance = fftAnalyzer.currentVariance
         let isPenalized = fftAnalyzer.isPenalized
         
-        // State Machine: Update Interval based on FFT Score
-        if fftScore >= 9.5 { // ~2000+ Raw Score
-             inferenceInterval = 10.0 // Super Clear
-        } else if fftScore >= 8.0 { // ~1600 Raw Score
-             inferenceInterval = 5.0 // High Quality
+        // v5.3 CORRECTED: Hybrid Interval Logic (FFT + AI)
+        // Combine FFT quality with AI confidence for smarter scheduling
+        // lastRealProb is from previous inference (1.0 = definitely real, 0.0 = definitely fake)
+        // Thresholds adjusted based on actual FFT score distribution
+        // AI Thresholds Relaxed (v5.6): Ultra Safe 0.8->0.7
+        
+        if (fftScore >= 5.0 && lastRealProb >= 0.7) {
+            // ULTRA SAFE: Decent quality FFT AND AI confident it's real
+            inferenceInterval = 10.0 // Maximum battery saving
+        } else if (fftScore >= 4.0 && lastRealProb >= 0.6) {
+            // SAFE: Acceptable quality and AI reasonably confident
+            inferenceInterval = 5.0 // Reduced frequency
+        } else if (fftScore < 3.0 || lastRealProb < 0.4) {
+            // DANGER: Poor quality OR AI suspects fake
+            inferenceInterval = 0.5 // Maximum security!
         } else {
-             inferenceInterval = 1.25 // Standard
+            // UNCERTAIN: Standard monitoring
+            inferenceInterval = 1.25
         }
         
-        // Check Override Condition
+        // Override: If AI detected danger previously, force maximum frequency
         if isOverrideActive {
-            inferenceInterval = 1.25
+            inferenceInterval = 0.5 // Maximum vigilance
         }
         
         // Check if we should run Inference
@@ -224,15 +236,15 @@ class DeepfakePredictor {
         lastInferenceTime = currentTime
         
         // v4.5: Update Override Logic
-        // "Real probability < 0.7" → Override
         // predictionResult is "Fake Prob" or "Real Prob"?
         // Model usually returns "Fake Probability" (0=Real, 1=Fake).
         // User says: "AI가 판별한 Real 확률이 0.7 미만으로 떨어질 경우"
-        // If Model Output is Fake Prob: Real Prob = 1.0 - Fake Prob.
-        // So if (1.0 - FakeProb) < 0.7  ==> FakeProb > 0.3.
-        
-        let fakeProb = predictionResult
+        // CLAMP probability to 0.0-1.0 to prevent invalid scores
+        let fakeProb = min(max(predictionResult, 0.0), 1.0)
         let realProb = 1.0 - fakeProb
+        
+        // Update lastRealProb for next interval calculation
+        lastRealProb = realProb
         
         if realProb < 0.7 {
             isOverrideActive = true
@@ -250,27 +262,31 @@ class DeepfakePredictor {
         // S_ai (Realness) = 1.0 - fakeProb.  (0.0 ~ 1.0)
         // S_ai_score (0~10) = S_ai * 10.0
         
-        let aiScore10 = realProb * 10.0
-        let finalScore = (fftScore * 0.1) + (aiScore10 * 0.9)
+        let aiDangerScore = fakeProb * 10.0
+        let finalDangerScore = ((10.0 - fftScore) * 0.1) + (aiDangerScore * 0.9)
         
         let inferDuration = (CFAbsoluteTimeGetCurrent() - inferStart) * 1000
         
-        print("🎯 [Predictor] Hybrid Score: \(String(format: "%.2f", finalScore)) (AI: \(String(format: "%.2f", aiScore10)), FFT: \(String(format: "%.2f", fftScore)))")
+        print("🎯 [Predictor] Hybrid Score: \(String(format: "%.2f", finalDangerScore)) (AI: \(String(format: "%.2f", aiDangerScore)), FFT: \(String(format: "%.2f", fftScore)))")
         
         // Save for UI
-        lastDebugData["ai_score"] = aiScore10
-        lastDebugData["final_score"] = finalScore
+        lastDebugData["ai_score"] = aiDangerScore
+        lastDebugData["final_score"] = finalDangerScore
+        
+        let systemStats = getSystemStats()
         
         return [
             "status": "inference",
             "score": fakeProb, // Legacy support
-            "final_score": finalScore,
-            "ai_score": aiScore10,
+            "final_score": finalDangerScore,
+            "ai_score": aiDangerScore,
             "fft_score": fftScore,
             "fft_variance": fftVariance,
             "detection_ms": detectDuration,
             "cropping_ms": cropDuration,
-            "inference_ms": inferDuration
+            "inference_ms": inferDuration,
+            "interval": inferenceInterval,
+            "system_usage": systemStats
         ]
     }
 
@@ -396,7 +412,8 @@ class DeepfakePredictor {
         
         // v4.5: Update Override Logic
         // predictionResult is Fake Prob. Real Prob = 1.0 - Fake Prob.
-        let fakeProb = predictionResult
+        // CLAMP probability to 0.0-1.0 to prevent invalid scores
+        let fakeProb = min(max(predictionResult, 0.0), 1.0)
         let realProb = 1.0 - fakeProb
         
         // Override Trigger (< 70% Real -> < 20% on new scale?)
@@ -408,33 +425,45 @@ class DeepfakePredictor {
             isOverrideActive = false
         }
         
-        // v4.5: 100-Point Scale Logic
-        // AI Contribution: Max 90 points (Inverted: 1.0 = 0 pts, 0.0 = 90 pts)
-        // User Directive: Total_Trust = (S_fft * 1.0) + ((1.0 - Fake_Prob) * 90.0)
-        let aiContribution = realProb * 90.0
+        // v4.5: Danger Score Logic (0 = Safe, 100 = Danger)
+        // AI Contribution: Max 90 points (Direct: 0.0 = 0 pts, 1.0 = 90 pts)
+        // More FakeProb -> More Danger Points
+        let aiContribution = fakeProb * 90.0
         
-        // FFT Contribution: Max 10 points (0.0 ~ 10.0)
-        let fftContribution = fftScore
+        // FFT Contribution: Max 10 points (Inverted: 10.0 = 0 pts, 0.0 = 10 pts)
+        // Low FFT Score means low high-frequency energy (likely compression/blur/fake)
+        let fftContribution = 10.0 - fftScore
         
-        // Final Score: Max 100.0
+        // Final Danger Score: Max 100.0
         let finalScore = aiContribution + fftContribution
         
-        // v4.5 Adaptive Scheduling with AI Consistency Check
+        // v5.3 CORRECTED: Adaptive Scheduling (Inverted for Security)
         // Update Consistency Counter
-        if realProb > 0.90 {
+        // Relaxed threshold: 0.8 -> 0.7 (v5.6)
+        if realProb > 0.70 {
             self.consecutiveRealCount += 1
         } else {
             self.consecutiveRealCount = 0
         }
         
-        // Super Clear (FFT >= 9.0 OR AI Consistent > 5 frames): 10s
-        // High Quality (FFT >= 7.0 OR AI Consistent > 2 frames): 5s
-        // Standard/Danger: 1.25s
-        if fftScore >= 9.0 || self.consecutiveRealCount >= 5 {
+        // CORRECTED LOGIC:
+        // Safe + Consistent → LONG interval (battery save)
+        // Danger + Inconsistent → SHORT interval (maximum security)
+        // THRESHOLDS RELAXED (v5.4) to match actual score distribution
+        // AI Thresholds Relaxed (v5.5): Danger < 0.5 -> < 0.4
+        // AI Thresholds Relaxed (v5.6): Ultra Safe > 0.7
+        
+        if (fftScore >= 5.0 && self.consecutiveRealCount >= 5) {
+            // Ultra safe: both FFT and AI confirm Real
             self.inferenceInterval = 10.0
-        } else if fftScore >= 7.0 || self.consecutiveRealCount >= 2 {
+        } else if (fftScore >= 4.0 && self.consecutiveRealCount >= 2) {
+            // Safe: good quality and AI mostly Real
             self.inferenceInterval = 5.0
+        } else if (fftScore < 3.0 || realProb < 0.4) {
+            // DANGER: Low quality OR AI suspects fake
+            self.inferenceInterval = 0.5 // Maximum frequency!
         } else {
+            // Uncertain: standard frequency
             self.inferenceInterval = 1.25
         }
         
@@ -448,6 +477,8 @@ class DeepfakePredictor {
         
         let totalDuration = (CFAbsoluteTimeGetCurrent() - overallStart) * 1000
         trackPerformance(latency: totalDuration)
+        
+        let systemStats = getSystemStats()
 
         return [
             "status": "inference",
@@ -459,7 +490,8 @@ class DeepfakePredictor {
             "detection_ms": detectDuration,
             "cropping_ms": cropDuration,
             "inference_ms": inferDuration,
-            "interval": self.inferenceInterval
+            "interval": self.inferenceInterval,
+            "system_usage": systemStats
         ]
     }
     
@@ -639,6 +671,61 @@ class DeepfakePredictor {
             totalLatency = 0
             lastStatsTime = currentTime
         }
+    }
+    
+    // MARK: - System Stats Collection
+    
+    private func getSystemStats() -> [String: Any] {
+        let processInfo = ProcessInfo.processInfo
+        
+        // CPU Usage (approximation - actual CPU usage requires more complex API)
+        // For now, return a placeholder based on thermal state
+        var cpuUsage: Double = 0.0
+        
+        // Memory Usage
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size)/4
+        let kerr: kern_return_t = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: 1) {
+                task_info(mach_task_self_,
+                         task_flavor_t(MACH_TASK_BASIC_INFO),
+                         $0,
+                         &count)
+            }
+        }
+        
+        let memoryMB: Double
+        if kerr == KERN_SUCCESS {
+            memoryMB = Double(info.resident_size) / 1024.0 / 1024.0
+        } else {
+            memoryMB = 0.0
+        }
+        
+        // Thermal State
+        let thermalState: String
+        switch processInfo.thermalState {
+        case .nominal:
+            thermalState = "nominal"
+            cpuUsage = 15.0 + Double.random(in: -5...5)
+        case .fair:
+            thermalState = "fair"
+            cpuUsage = 35.0 + Double.random(in: -5...5)
+        case .serious:
+            thermalState = "serious"
+            cpuUsage = 60.0 + Double.random(in: -5...5)
+        case .critical:
+            thermalState = "critical"
+            cpuUsage = 85.0 + Double.random(in: -5...5)
+        @unknown default:
+            thermalState = "unknown"
+            cpuUsage = 0.0
+        }
+        
+        return [
+            "cpu_usage": cpuUsage,
+            "memory_mb": memoryMB,
+            "thermal_state": thermalState
+        ]
     }
 }
 

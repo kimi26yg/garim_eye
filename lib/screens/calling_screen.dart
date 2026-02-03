@@ -85,9 +85,9 @@ class _CallingScreenState extends State<CallingScreen>
               },
             ),
             const SizedBox(height: 48),
-            // 사용자 정보 (강혜린/또롱님)
+            // 사용자 정보 (/또롱님)
             Text(
-              '강혜린',
+              '배용성',
               style: Theme.of(context).textTheme.displaySmall?.copyWith(
                 color: Colors.white,
                 fontWeight: FontWeight.bold,

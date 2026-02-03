@@ -26,6 +26,8 @@ class DeepfakeInsightPanel extends StatelessWidget {
           const Divider(color: Colors.white24, height: 30),
           _buildDetailSection(),
           const Divider(color: Colors.white24, height: 30),
+          _buildSystemStatsSection(),
+          const Divider(color: Colors.white24, height: 30),
           _buildIntervalSection(),
         ],
       ),
@@ -64,13 +66,13 @@ class DeepfakeInsightPanel extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text("TRUST SCORE", style: _labelStyle()),
+        Text("TRUST SCORE (20s Avg)", style: _labelStyle()),
         const SizedBox(height: 8),
         Row(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
             Text(
-              state.finalScore.toStringAsFixed(1),
+              (state.confidence * 100.0).toStringAsFixed(1),
               style: TextStyle(
                 color: _getStatusColor(state.status),
                 fontSize: 48,
@@ -85,13 +87,10 @@ class DeepfakeInsightPanel extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 8),
-        _buildProgressBar(
-          state.finalScore / 100.0,
-          _getStatusColor(state.status),
-        ),
+        _buildProgressBar(state.confidence, _getStatusColor(state.status)),
         const SizedBox(height: 4),
         Text(
-          _getStatusText(state.status, state.finalScore),
+          _getStatusText(state.status, state.confidence * 100.0),
           style: TextStyle(color: _getStatusColor(state.status), fontSize: 12),
         ),
       ],
@@ -116,47 +115,78 @@ class DeepfakeInsightPanel extends StatelessWidget {
         _buildStatRow("Variance", state.fftVariance.toStringAsFixed(0)),
         const SizedBox(height: 8),
         _buildStatRow("AI Vision (90)", state.aiScore.toStringAsFixed(1)),
+        const SizedBox(height: 8),
+        _buildStatRow(
+          "Instant Score (Raw)",
+          state.finalScore.toStringAsFixed(1),
+        ),
       ],
     );
   }
 
   Widget _buildIntervalSection() {
+    String modeName;
+    Color modeColor;
+    IconData modeIcon;
+
+    if (state.interval >= 60.0) {
+      modeName = "DEEP SLEEP (Ultra-Low Power)";
+      modeColor = Colors.blueAccent;
+      modeIcon = Icons.nights_stay;
+    } else if (state.interval >= 10.0) {
+      modeName = "TRUSTED (Zero Impact)";
+      modeColor = Colors.green;
+      modeIcon = Icons.verified_user;
+    } else if (state.interval >= 5.0) {
+      modeName = "STABLE (Low Power)";
+      modeColor = Colors.tealAccent;
+      modeIcon = Icons.shield_moon;
+    } else {
+      modeName = "ACTIVE (High Perf)";
+      modeColor = Colors.orangeAccent;
+      modeIcon = Icons.bolt;
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text("SAMPLING", style: _labelStyle()),
+        Text("THERMAL MODE (v5.0)", style: _labelStyle()),
         const SizedBox(height: 12),
-        _buildStatRow("Interval", "${state.interval}s"),
-        const SizedBox(height: 8),
-        // Visualize Interval
-        Row(
-          children: [
-            _buildIntervalDot(10.0),
-            const SizedBox(width: 4),
-            _buildIntervalDot(5.0),
-            const SizedBox(width: 4),
-            _buildIntervalDot(1.25),
-          ],
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: modeColor.withOpacity(0.1),
+            border: Border.all(color: modeColor.withOpacity(0.5)),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            children: [
+              Icon(modeIcon, color: modeColor, size: 20),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      modeName,
+                      style: TextStyle(
+                        color: modeColor,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      "Interval: ${state.interval}s",
+                      style: TextStyle(color: Colors.white54, fontSize: 10),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ],
-    );
-  }
-
-  Widget _buildIntervalDot(double val) {
-    bool active = state.interval == val;
-    return Container(
-      padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: active ? Colors.blue : Colors.white10,
-        borderRadius: BorderRadius.circular(4),
-      ),
-      child: Text(
-        "${val}s",
-        style: TextStyle(
-          fontSize: 10,
-          color: active ? Colors.white : Colors.white38,
-        ),
-      ),
     );
   }
 
@@ -215,5 +245,61 @@ class DeepfakeInsightPanel extends StatelessWidget {
     if (status.name == 'safe') return "SAFE";
     if (status.name == 'warning') return "LOW SIGNAL QUALITY";
     return "DANGER DETECTED";
+  }
+
+  Widget _buildSystemStatsSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text("SYSTEM PERFORMANCE", style: _labelStyle()),
+        const SizedBox(height: 12),
+        _buildStatRow("CPU Usage", "${state.cpuUsage.toStringAsFixed(1)}%"),
+        const SizedBox(height: 8),
+        _buildStatRow("Memory", "${state.memoryUsage.toStringAsFixed(0)} MB"),
+        const SizedBox(height: 8),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              "Thermal",
+              style: TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+            Container(
+              padding: EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(
+                color: _getThermalColor(state.thermalState).withOpacity(0.2),
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(
+                  color: _getThermalColor(state.thermalState).withOpacity(0.5),
+                ),
+              ),
+              child: Text(
+                state.thermalState.toUpperCase(),
+                style: TextStyle(
+                  color: _getThermalColor(state.thermalState),
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Color _getThermalColor(String state) {
+    switch (state) {
+      case 'nominal':
+        return Colors.greenAccent;
+      case 'fair':
+        return Colors.yellowAccent;
+      case 'serious':
+        return Colors.orangeAccent;
+      case 'critical':
+        return Colors.redAccent;
+      default:
+        return Colors.grey;
+    }
   }
 }

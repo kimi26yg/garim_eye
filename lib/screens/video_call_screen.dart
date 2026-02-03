@@ -12,6 +12,7 @@ import '../providers/call_provider.dart';
 import '../theme/app_theme.dart';
 import '../services/detection/deepfake_inference_service.dart';
 import '../widgets/deepfake_insight_panel.dart';
+import '../widgets/interaction_guide_overlay.dart';
 
 class VideoCallScreen extends ConsumerStatefulWidget {
   const VideoCallScreen({super.key});
@@ -74,6 +75,18 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
         }
         // Only update if changed prevents unnecessary rebuilds, but simple set is fine
         ref.read(riskLevelProvider.notifier).state = newLevel;
+      }
+    });
+
+    // v5.1 Auto-Stop Listener
+    _inferenceService.autoStopStream.listen((_) {
+      if (mounted) {
+        debugPrint("🛑 [VideoCallScreen] Received Auto-Stop Signal");
+        // 1. Turn off protection toggle visually
+        ref.read(garimProtectionProvider.notifier).state = false;
+
+        // 2. Show Dialog
+        _showAutoStopDialog();
       }
     });
 
@@ -504,6 +517,16 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
             ),
           ),
 
+          // 4.5. Interaction Guide Overlay (Center) - FIXED
+          if (ref.read(garimProtectionProvider))
+            StreamBuilder<DeepfakeState>(
+              stream: _inferenceService.stateStream,
+              builder: (context, snapshot) {
+                if (!snapshot.hasData) return const SizedBox.shrink();
+                return InteractionGuideOverlay(state: snapshot.data!);
+              },
+            ),
+
           // 5. Draggable PiP Window (My View)
           Positioned(
             left: pipPosition?.dx ?? 0,
@@ -739,6 +762,48 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(color: bgColor, shape: BoxShape.circle),
         child: Icon(icon, color: iconColor, size: 28),
+      ),
+    );
+  }
+
+  void _showAutoStopDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        backgroundColor: Colors.black87,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(color: Colors.greenAccent, width: 2),
+        ),
+        title: Row(
+          children: [
+            Icon(Icons.verified_user, color: Colors.greenAccent),
+            SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                "Safe Call Confirmed",
+                style: TextStyle(color: Colors.white),
+              ),
+            ),
+          ],
+        ),
+        content: Text(
+          "Stable call confirmed (5m+).\nReliability verified.\n\nGarim Engine has been paused to save battery.\nRe-enable if you feel suspicious!",
+          style: TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: Text(
+              "OK",
+              style: TextStyle(
+                color: Colors.greenAccent,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

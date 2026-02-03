@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import 'frame_extractor.dart';
+import 'reliability_manager.dart';
 
 // --- DTOs ---
 
@@ -46,7 +47,15 @@ class DeepfakeState {
     this.aiScore = 0.0,
     this.finalScore = 0.0,
     this.interval = 1.25,
+    this.cpuUsage = 0.0,
+    this.memoryUsage = 0.0,
+    this.thermalState = 'nominal',
   });
+
+  // System Stats
+  final double cpuUsage;
+  final double memoryUsage;
+  final String thermalState;
 
   @override
   String toString() =>
@@ -77,13 +86,12 @@ class DeepfakeInferenceService {
   final _stateController = StreamController<DeepfakeState>.broadcast();
   Stream<DeepfakeState> get stateStream => _stateController.stream;
 
-  // EMA State
-  double _emaScore = 0.0;
-  double _previousRawScore = 0.0;
-  bool _isFirstRun = true;
+  final _autoStopController = StreamController<void>.broadcast();
+  Stream<void> get autoStopStream => _autoStopController.stream;
 
-  // Frame sampling
-  int _frameCounter = 0;
+  // EMA State
+  // Reliability Manager
+  final ReliabilityManager _reliabilityManager = ReliabilityManager();
 
   // Logging
   IOSink? _logSink;
@@ -111,9 +119,6 @@ class DeepfakeInferenceService {
       debugPrint("❌ [InferenceService] Failed to attach native sink: $e");
     }
 
-    _isFirstRun = true;
-    _previousRawScore = 0.0;
-
     await _initLogger();
 
     // Subscribe to native event channel for results
@@ -129,12 +134,17 @@ class DeepfakeInferenceService {
     );
 
     // Pure Native Mode: Disable Dart frame extraction to verify Native connection
+    // v5.0 Optimization: If Native Sink attached successfully, DO NOT run Dart extraction
+    // logic: We blindly attached above. Ideally we track result.
+    // simpler: Let's assume Native is PRIMARY. Only run Dart if Native failed?
+    // consistent with plan: "Ensure Dart-side _frameExtractor is PAUSED"
+    // We simply COMMENT OUT the startExtraction for now as we are 100% native.
+    // RESTORED: Native Sink proved unreliable/silent. We enable Dart as backup.
     await _frameExtractor.startExtraction(track);
 
     // Process all frames for maximum accuracy
     // Expected: 20 frames in ~3 seconds at 16.8 FPS
     _frameSub = _frameExtractor.frameStream.listen((bytes) {
-      _frameCounter++;
       unawaited(_handleFrame(bytes));
     });
 
@@ -183,6 +193,16 @@ class DeepfakeInferenceService {
       return;
     }
 
+    // v5.1 Auto-Stop Handling
+    if (status == "auto_stopped") {
+      debugPrint("🛑 [InferenceService] Auto-Stop Triggered (5m Stability).");
+      _autoStopController.add(null);
+      // We don't stop() immediately here, we let the UI decide?
+      // Actually plan says "Completely stop".
+      stop();
+      return;
+    }
+
     if (status == "inference") {
       final score = (result['score'] as num?)?.toDouble() ?? 0.0;
       final inferMs = (result['inference_ms'] as num?)?.toDouble() ?? 0.0;
@@ -194,6 +214,12 @@ class DeepfakeInferenceService {
       final aiScore = (result['ai_score'] as num?)?.toDouble() ?? 0.0;
       final finalScore = (result['final_score'] as num?)?.toDouble() ?? 0.0;
       final interval = (result['interval'] as num?)?.toDouble() ?? 1.25;
+
+      // System Stats
+      final sys = result['system_usage'] as Map? ?? {};
+      final cpuUsage = (sys['cpu_usage'] as num?)?.toDouble() ?? 0.0;
+      final memoryUsage = (sys['memory_mb'] as num?)?.toDouble() ?? 0.0;
+      final thermalState = (sys['thermal_state'] as String?) ?? 'unknown';
 
       // Intelligent Engine Logic
       _processIntelligentScore(
@@ -207,6 +233,9 @@ class DeepfakeInferenceService {
         aiScore,
         finalScore,
         interval,
+        cpuUsage,
+        memoryUsage,
+        thermalState,
       );
     }
   }
@@ -224,6 +253,9 @@ class DeepfakeInferenceService {
     double aiScore,
     double finalScore,
     double interval,
+    double cpuUsage,
+    double memoryUsage,
+    String thermalState,
   ) {
     // v4.5 Logic: Trust Native Final Score (0.0 ~ 10.0)
     // Map Final Score to DetectionStatus
@@ -231,19 +263,36 @@ class DeepfakeInferenceService {
     // Warning: ???
     // The previous logic used 0.7 (7.0) threshold for Danger.
 
+    // v5.2 Reliability Logic: Use Weighted Moving Average
+    // Input: finalScore (0.0 ~ 100.0) IS A DANGER SCORE (High = Fake)
+    // We need a SAFETY SCORE for Reliability (High = Real/Safe)
+    double safetyScore = 100.0 - finalScore;
+
+    // Invert Component Scores for UI (Display Safety instead of Danger)
+    // AI Score (0~90 Danger) -> (0~90 Safety)
+    double safetyAiScore = 90.0 - aiScore;
+    if (safetyAiScore < 0) safetyAiScore = 0.0;
+
+    // FFT Score (0~10 Danger) -> (0~10 Safety)
+    double safetyFftScore = 10.0 - fftScore;
+    if (safetyFftScore < 0) safetyFftScore = 0.0;
+
+    // Output: reliableScore (0.0 ~ 100.0) -> High means Safe
+    final double reliableScore = _reliabilityManager.addAndCalculate(
+      safetyScore,
+    );
+
     DetectionStatus status;
     String triggerType = "HYBRID_v4.5";
 
-    // v4.5 100-Point Scale Thresholds
-    // Ultra Safe: >= 95.0
-    // Safe: >= 80.0
-    // Warning: >= 40.0
-    // Danger: < 40.0
-    if (finalScore >= 95.0) {
+    // v5.3 CORRECTED Reliability Score Thresholds (Applied to reliableScore)
+    // Score Interpretation: 100 = Safe (Real), 0 = Danger (Deepfake)
+    // Safe: > 40.0 (High confidence in being real)
+    // Warning: 25.0 ~ 40.0 (Uncertain)
+    // Danger: < 25.0 (High confidence in being deepfake)
+    if (reliableScore > 40.0) {
       status = DetectionStatus.safe;
-    } else if (finalScore >= 80.0) {
-      status = DetectionStatus.safe;
-    } else if (finalScore >= 40.0) {
+    } else if (reliableScore > 25.0) {
       status = DetectionStatus.warning;
     } else {
       status = DetectionStatus.danger;
@@ -251,19 +300,33 @@ class DeepfakeInferenceService {
 
     final state = DeepfakeState(
       rawScore: rawCnnScore,
-      confidence: finalScore / 100.0, // Norm 0.0-1.0 for UI %
+      confidence:
+          reliableScore / 100.0, // Norm 0.0-1.0 for UI % using Smoothed Score
       status: status,
-      fftScore: fftScore,
+      fftScore: safetyFftScore, // Display Safety Score
       fftVariance: fftVariance,
       isPenalized: isPenalized,
-      aiScore: aiScore,
-      finalScore: finalScore,
+      aiScore: safetyAiScore, // Display Safety Score
+      finalScore: safetyScore, // Display Safety Score
       interval: interval,
+      cpuUsage: cpuUsage,
+      memoryUsage: memoryUsage,
+      thermalState: thermalState,
     );
     _stateController.add(state);
 
     // 6. Log
-    _logInference(state, fftScore, triggerType, detectMs, cropMs, inferMs);
+    _logInference(
+      state,
+      fftScore,
+      triggerType,
+      detectMs,
+      cropMs,
+      inferMs,
+      cpuUsage,
+      memoryUsage,
+      reliableScore, // Log valid smoothed score
+    );
 
     // debugPrint(
     //   "🎯 [Engine] Hybrid: ${finalScore.toStringAsFixed(2)} | AI: $aiScore | FFT: $fftScore | Interval: $interval",
@@ -283,7 +346,7 @@ class DeepfakeInferenceService {
 
       _logSink = logFile.openWrite();
       _logSink?.writeln(
-        'Timestamp,Raw_CNN,Raw_FFT,Fused,EMA,Status,Trigger_Type,Detect_ms,Crop_ms,Inference_ms,Pipeline_FPS',
+        'Timestamp,Raw_CNN,Raw_FFT,Fused,EMA,Status,Trigger_Type,Detect_ms,Crop_ms,Inference_ms,Pipeline_FPS,CPU,Memory,Reliable_Score',
       );
     } catch (e) {
       debugPrint("[InferenceService] Failed to init logger: $e");
@@ -297,13 +360,16 @@ class DeepfakeInferenceService {
     double detectMs,
     double cropMs,
     double inferMs,
+    double cpu,
+    double mem,
+    double reliableScore,
   ) {
     if (_logSink != null) {
       final time = DateTime.now().toIso8601String();
       _logSink?.writeln(
         '$time,${state.rawScore.toStringAsFixed(4)},${fft.toStringAsFixed(4)},'
         '${state.rawScore.toStringAsFixed(4)},${state.confidence.toStringAsFixed(4)},'
-        '${state.status.name},$trigger,${detectMs.toStringAsFixed(2)},${cropMs.toStringAsFixed(2)},${inferMs.toStringAsFixed(2)},',
+        '${state.status.name},$trigger,${detectMs.toStringAsFixed(2)},${cropMs.toStringAsFixed(2)},${inferMs.toStringAsFixed(2)},$_pipelineFpsCounter,$cpu,$mem,${reliableScore.toStringAsFixed(2)}',
       );
     }
   }
